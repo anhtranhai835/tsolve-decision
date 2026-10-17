@@ -1,0 +1,20 @@
+{"id":"T01","summary":"Không đăng nhập được Jira sau khi đổi mật khẩu","description":"Sáng nay đổi mật khẩu Google, giờ Jira báo invalid credentials.","triage":"simple"}
+{"id":"T02","summary":"Không biết thêm thành viên vào project Jira","description":"Mình là PM mới, không tìm thấy nút Add people trong project.","triage":"simple"}
+{"id":"T03","summary":"Máy in tầng 3 không in được","description":"Máy in báo hết giấy dù khay vừa được nạp.","triage":"simple"}
+{"id":"T04","summary":"Outlook không đồng bộ lịch trên máy mới","description":"Vừa đổi laptop, Outlook chưa hiện lịch họp cũ.","triage":"simple"}
+{"id":"T05","summary":"VPN báo sai mã OTP","description":"Làm việc ở nhà, nhập mã OTP trên app nhưng VPN báo sai mã.","triage":"simple"}
+{"id":"T06","summary":"Cần mật khẩu Wi-Fi khách","description":"Chiều nay có đối tác đến họp, cần mật khẩu Wi-Fi cho khách.","triage":"simple"}
+{"id":"T07","summary":"Excel báo file đang bị khóa","description":"Mở file báo cáo chung thì báo đang được người khác chỉnh sửa.","triage":"simple"}
+{"id":"T08","summary":"Không thấy dashboard của team mới","description":"Vừa chuyển sang team Sales, không thấy dashboard của team trong Jira.","triage":"simple"}
+{"id":"T09","summary":"Chrome báo chứng chỉ không hợp lệ","description":"Vào trang nội bộ bị báo lỗi chứng chỉ, đồng hồ máy đang chạy sai ngày.","triage":"simple"}
+{"id":"T10","summary":"Muốn đổi ngôn ngữ Jira sang tiếng Việt","description":"Giao diện Jira đang là tiếng Anh, muốn chuyển sang tiếng Việt.","triage":"simple"}
+{"id":"T11","summary":"Thanh toán lỗi 500 toàn hệ thống","description":"Từ 9h sáng mọi khách hàng đều không tạo được đơn, API payment trả 500.","triage":"complex"}
+{"id":"T12","summary":"Báo cáo doanh thu tháng 9 lệch 12%","description":"Số liệu trên dashboard lệch so với kế toán khoảng 12%, chưa rõ nguyên nhân.","triage":"complex"}
+{"id":"T13","summary":"Database production chậm bất thường","description":"Query đơn giản mất 30 giây, nhiều service bị timeout từ trưa.","triage":"complex"}
+{"id":"T14","summary":"App Android crash ở màn hình giỏ hàng","description":"Sau bản deploy tối qua, app crash khi mở giỏ hàng trên Android 14.","triage":"complex"}
+{"id":"T15","summary":"Admin đăng nhập lúc 3h sáng từ IP lạ","description":"Log cho thấy tài khoản admin đăng nhập từ IP nước ngoài, nghi lộ mật khẩu.","triage":"complex"}
+{"id":"T16","summary":"Tồn kho sai sau khi đồng bộ ERP","description":"Job đồng bộ ERP với website báo thành công nhưng tồn kho vẫn sai ở một số SKU.","triage":"complex"}
+{"id":"T17","summary":"Mất file đính kèm của ticket tuần trước","description":"File đính kèm của các ticket tạo tuần trước tải về đều bị lỗi 404.","triage":"complex"}
+{"id":"T18","summary":"Service đặt lịch bị kill mỗi 6 tiếng","description":"Bộ nhớ tăng dần rồi service bị kill, chưa tái hiện được trên staging.","triage":"complex"}
+{"id":"T19","summary":"Email gửi khách hàng vào spam hàng loạt","description":"Từ hôm qua email marketing gửi khách đều vào spam, ảnh hưởng chiến dịch.","triage":"complex"}
+{"id":"T20","summary":"SSO với đối tác lỗi chữ ký SAML ngẫu nhiên","description":"Chỉ một số người dùng bị lỗi chữ ký SAML khi đăng nhập qua SSO đối tác.","triage":"complex"}

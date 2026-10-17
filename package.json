@@ -1,0 +1,13 @@
+{
+  "name": "tsolve-decision",
+  "private": true,
+  "type": "module",
+  "description": "T-Solve decision server (System One contract, self-hosted model) and SDK forked from the official TypeSafe JS SDK",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "server": "node server.ts",
+    "demo": "node demo.ts",
+    "harness": "node harness.ts",
+    "test": "node --test decision.test.ts"
+  }
+}

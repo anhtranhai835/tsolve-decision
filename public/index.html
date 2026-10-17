@@ -1,0 +1,525 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>T-Solve Triage Pipeline</title>
+<style>
+  :root {
+    --bg: #f3f5f8; --panel: #fff; --text: #1b2433; --muted: #6b7686; --line: #dde2ea;
+    --accent: #0b6bcb; --accent-soft: #e6f0fb; --ok: #1f9d55; --ok-soft: #e4f6ec; --warn: #c26a00; --warn-soft: #fdf1e2;
+    --err: #d23b30; --idle: #b8c0cc; --dots: #d7dce4; --canvas: #fbfcfd;
+    --console-bg: #0f1520; --console-text: #c9d4e3; --console-muted: #6c7a8f; --think: #f0b45b; --info: #7fb6ff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f1218; --panel: #171b23; --text: #e5e9f0; --muted: #94a0b2; --line: #2a303b;
+      --accent: #5aa2ff; --accent-soft: #16263a; --ok: #49c784; --ok-soft: #163126; --warn: #f0a24a; --warn-soft: #33261a;
+      --err: #ff6f66; --idle: #4a5363; --dots: #262c36; --canvas: #13171e; --console-bg: #0a0d13; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.5 system-ui, "Segoe UI", sans-serif; }
+  button, select, input, textarea { font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .45; cursor: default; }
+  code, pre, .mono { font-family: ui-monospace, Consolas, monospace; }
+
+  /* top bar */
+  .topbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  .brand { font-weight: 700; font-size: 15px; }
+  .crumbs { color: var(--muted); }
+  .spacer { flex: 1; }
+  .status { padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; letter-spacing: .04em; }
+  .st-idle { background: var(--line); color: var(--muted); }
+  .st-running { background: var(--accent-soft); color: var(--accent); }
+  .st-success { background: var(--ok-soft); color: var(--ok); }
+  .st-failed { background: var(--warn-soft); color: var(--err); }
+  .meta { color: var(--muted); }
+
+  .layout { display: grid; grid-template-columns: 300px 1fr; min-height: calc(100vh - 54px); }
+  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+
+  /* left: import + summary + ticket list */
+  aside { background: var(--panel); border-right: 1px solid var(--line); padding: 12px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  aside h3 { margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .import { display: flex; flex-wrap: wrap; gap: 6px; }
+  .import input[type=file] { max-width: 100%; }
+  details textarea { width: 100%; min-height: 80px; margin: 6px 0; font-size: 11px; }
+  .msg { color: var(--muted); font-size: 12px; }
+  .msg.err { color: var(--err); }
+  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .card { border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+  .card b { display: block; font-size: 16px; }
+  .card span { color: var(--muted); font-size: 11px; }
+  .bias { padding: 8px; border-radius: 6px; background: var(--warn-soft); color: var(--warn); font-size: 12px; }
+  .tickets { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; min-height: 200px; }
+  .tickets li { display: grid; grid-template-columns: 14px 1fr auto; gap: 8px; align-items: center; padding: 6px; border-radius: 6px; cursor: pointer; }
+  .tickets li:hover { background: var(--bg); }
+  .tickets li.sel { background: var(--accent-soft); }
+  .tickets .sum { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tickets .id { color: var(--muted); font-size: 11px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--idle); }
+  .dot.running { background: var(--accent); animation: pulse 1s infinite; }
+  .dot.success { background: var(--ok); }
+  .dot.failed { background: var(--err); }
+  .badge { padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+  .b-simple { background: var(--ok-soft); color: var(--ok); }
+  .b-complex { background: var(--warn-soft); color: var(--warn); }
+  .right { color: var(--ok); } .wrong { color: var(--err); }
+
+  /* main: execution */
+  .main { display: flex; flex-direction: column; min-width: 0; }
+  .exec-head { padding: 12px 16px; background: var(--panel); border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: baseline; }
+  .exec-head h2 { margin: 0; font-size: 17px; }
+  .canvas-wrap { overflow-x: auto; background: var(--canvas); background-image: radial-gradient(var(--dots) 1px, transparent 1px); background-size: 16px 16px; border-bottom: 1px solid var(--line); }
+  .canvas { position: relative; width: 1040px; height: 310px; margin: 0 auto; }
+  .canvas svg { position: absolute; inset: 0; }
+  .edge { fill: none; stroke: var(--idle); stroke-width: 2; }
+  .edge.done { stroke: var(--accent); }
+  .edge.skipped { stroke-dasharray: 4 4; opacity: .5; }
+  .group { position: absolute; border: 1.5px dashed var(--accent); border-radius: 8px; background: color-mix(in srgb, var(--accent) 4%, transparent); }
+  .group span { position: absolute; top: -10px; left: 10px; padding: 0 6px; background: var(--canvas); color: var(--accent); font-size: 11px; white-space: nowrap; }
+  .node { position: absolute; width: 130px; transform: translate(-50%, -24px); text-align: center; cursor: pointer; }
+  .node .box { position: relative; width: 48px; height: 48px; margin: 0 auto; display: grid; place-items: center; border: 2px solid var(--idle); border-radius: 10px; background: var(--panel); font-weight: 700; font-size: 12px; color: var(--muted); }
+  .node.diamond .box { width: 40px; height: 40px; margin-top: 4px; margin-bottom: 4px; transform: rotate(45deg); border-radius: 6px; }
+  .node.diamond .box > em { transform: rotate(-45deg); font-style: normal; }
+  .node .label { margin-top: 6px; font-size: 12px; line-height: 1.3; }
+  .node .label small { color: var(--muted); display: block; }
+  .node.success .box { border-color: var(--ok); color: var(--ok); }
+  .node.running .box { border-color: var(--accent); color: var(--accent); animation: ring 1s infinite; }
+  .node.failed .box { border-color: var(--err); color: var(--err); }
+  .node.skipped { opacity: .4; }
+  .node.sel .box { box-shadow: 0 0 0 4px var(--accent-soft); }
+  .tick { position: absolute; top: -8px; right: -8px; width: 16px; height: 16px; border-radius: 50%; display: grid; place-items: center; font-size: 10px; color: #fff; }
+  .diamond .tick { transform: rotate(-45deg); }
+  .success .tick { background: var(--ok); }
+  .failed .tick { background: var(--err); }
+  .terminal { position: absolute; width: 18px; height: 18px; transform: translate(-50%, -50%); border-radius: 50%; border: 2px solid var(--idle); background: var(--panel); }
+  .terminal.success { border-color: var(--ok); background: var(--ok-soft); }
+  @keyframes pulse { 50% { opacity: .3; } }
+  @keyframes ring { 50% { box-shadow: 0 0 0 6px var(--accent-soft); } }
+
+  /* bottom: step details + AI console */
+  .bottom { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); flex: 1; min-height: 340px; }
+  @media (max-width: 1100px) { .bottom { grid-template-columns: 1fr; } }
+  .details { padding: 12px 16px; background: var(--panel); border-right: 1px solid var(--line); overflow: auto; max-height: 520px; }
+  .details h4 { margin: 0 0 4px; font-size: 14px; }
+  .details h5 { margin: 12px 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .kv { display: grid; grid-template-columns: 110px 1fr; gap: 2px 8px; }
+  .kv dt { color: var(--muted); } .kv dd { margin: 0; overflow-wrap: anywhere; }
+  .details pre { margin: 0; padding: 8px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; max-height: 220px; overflow: auto; }
+  .probs { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .probs td { padding: 2px 4px; }
+  .pbar { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; min-width: 80px; }
+  .pbar > i { display: block; height: 100%; background: var(--accent); }
+  .console { background: var(--console-bg); color: var(--console-text); display: flex; flex-direction: column; min-width: 0; }
+  .console header { display: flex; justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid #1f2836; font-size: 12px; color: var(--console-muted); }
+  .console header b { color: var(--console-text); }
+  .log { flex: 1; overflow: auto; padding: 8px 12px; font: 12px/1.6 ui-monospace, Consolas, monospace; max-height: 520px; }
+  .log div { display: grid; grid-template-columns: 64px 48px 96px 1fr; gap: 6px; }
+  .log .t { color: var(--console-muted); }
+  .log .INFO { color: var(--info); } .log .THINK { color: var(--think); } .log .DECIDE { color: #6ee7a8; } .log .ERROR { color: #ff8a80; }
+  .log .scope { color: var(--console-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .log .text { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .empty { color: var(--muted); padding: 24px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <span class="brand">T-Solve Decision</span>
+  <span class="crumbs">Triage Pipeline › <span id="crumbTicket">chưa chọn ticket</span></span>
+  <span id="status" class="status st-idle">CHƯA CHẠY</span>
+  <span id="timing" class="meta"></span>
+  <span class="spacer"></span>
+  <label class="meta">Model <select id="model"></select></label>
+  <label class="meta">Ngưỡng Simple <input id="threshold" type="number" min="0.5" max="1" step="0.05" value="0.80" style="width:70px"></label>
+  <button id="runOne" disabled>Chạy ticket này</button>
+  <button id="runAll" class="primary" disabled>Chạy tất cả</button>
+  <button id="stop" disabled>Dừng</button>
+</div>
+
+<div class="layout">
+  <aside>
+    <h3>1 · Import ticket</h3>
+    <div class="import">
+      <button id="sample">20 ticket mẫu</button>
+      <input type="file" id="file" accept=".jsonl,.json,.csv">
+    </div>
+    <details>
+      <summary class="msg">Dán JSONL / JSON / CSV</summary>
+      <textarea id="paste" placeholder="Cột: id (hoặc ticket_id), summary (hoặc title), description, triage (simple/complex, không bắt buộc)"></textarea>
+      <button id="importPaste">Import</button>
+    </details>
+    <div id="importMsg" class="msg"></div>
+    <h3>Tổng kết</h3>
+    <div id="cards" class="cards"></div>
+    <div id="bias" class="bias" hidden></div>
+    <h3>Ticket</h3>
+    <ul id="tickets" class="tickets"></ul>
+  </aside>
+
+  <section class="main">
+    <div class="exec-head">
+      <h2 id="title">Import ticket để bắt đầu</h2>
+      <span id="subtitle" class="meta"></span>
+    </div>
+    <div class="canvas-wrap"><div id="canvas" class="canvas"></div></div>
+    <div class="bottom">
+      <div id="details" class="details"><div class="empty">Bấm vào một bước trong pipeline để xem input, output và prompt.</div></div>
+      <div class="console">
+        <header><b>AI đang nghĩ gì</b><span>prompt → token tiếp theo → xác suất → quyết định</span></header>
+        <div id="log" class="log"></div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+const QUESTION_NODES = ["triage", "needs_human", "urgency"];
+
+// ---- pipeline layout -------------------------------------------------------
+const NODES = {
+  start: { x: 30, y: 155, terminal: true },
+  import: { x: 120, y: 155, label: "Import ticket", glyph: "IN" },
+  state: { x: 250, y: 155, label: "Ghép state", glyph: "{ }" },
+  triage: { x: 460, y: 70, label: "Triage", sub: "choice", glyph: "A/B" },
+  needs_human: { x: 460, y: 155, label: "Cần người?", sub: "noul", glyph: "Y/N" },
+  urgency: { x: 460, y: 240, label: "Khẩn cấp", sub: "score 0–3", glyph: "0–3" },
+  rule: { x: 680, y: 155, label: "Luật GBR-35", sub: "ngưỡng P(simple)", glyph: "≥", diamond: true },
+  route_simple: { x: 845, y: 95, label: "Gợi ý Solution", sub: "Simple", glyph: "✎" },
+  route_complex: { x: 845, y: 215, label: "Escalation handler", sub: "Complex", glyph: "⚑" },
+  end: { x: 1005, y: 155, terminal: true },
+};
+const EDGES = [
+  ["start", "import"], ["import", "state"],
+  ["state", "triage"], ["state", "needs_human"], ["state", "urgency"],
+  ["triage", "rule"], ["needs_human", "rule"], ["urgency", "rule"],
+  ["rule", "route_simple"], ["rule", "route_complex"], ["route_simple", "end"], ["route_complex", "end"],
+];
+
+// ---- state -----------------------------------------------------------------
+let tickets = [];
+let execs = [];        // one execution per ticket, same index
+let selected = -1;     // selected ticket
+let selectedNode = "triage";
+let questions = null;
+let running = false;
+let stopRequested = false;
+
+const newExec = () => ({ status: "idle", nodes: {}, answers: {}, traces: {}, logs: [] });
+
+// ---- import ----------------------------------------------------------------
+// Minimal RFC 4180 CSV: quoted fields, doubled quotes, commas and newlines inside quotes.
+function parseCsv(text) {
+  const rows = [[]];
+  let field = "", quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '"' && text[i + 1] === '"') { field += '"'; i++; }
+      else if (c === '"') quoted = false;
+      else field += c;
+    } else if (c === '"') quoted = true;
+    else if (c === ",") { rows.at(-1).push(field); field = ""; }
+    else if (c === "\n" || c === "\r") {
+      if (c === "\r" && text[i + 1] === "\n") i++;
+      rows.at(-1).push(field); field = ""; rows.push([]);
+    } else field += c;
+  }
+  rows.at(-1).push(field);
+  const nonEmpty = rows.filter((r) => r.some((f) => f.trim()));
+  const header = nonEmpty.shift().map((h) => h.trim().toLowerCase());
+  return nonEmpty.map((r) => Object.fromEntries(header.map((h, i) => [h, r[i] ?? ""])));
+}
+
+function parseTickets(text) {
+  const t = text.trim();
+  if (!t) throw new Error("Nội dung trống.");
+  let raw;
+  if (t.startsWith("[")) raw = JSON.parse(t);
+  else if (t.startsWith("{")) raw = t.split(/\r?\n/).filter((l) => l.trim()).map((l, i) => {
+    try { return JSON.parse(l); } catch { throw new Error(`Dòng ${i + 1} không phải JSON hợp lệ.`); }
+  });
+  else raw = parseCsv(t);
+  const list = raw.map((r, i) => {
+    const label = String(r.triage ?? r.label ?? "").trim().toLowerCase();
+    return {
+      raw: r,
+      id: String(r.id ?? r.ticket_id ?? `T${String(i + 1).padStart(2, "0")}`),
+      summary: String(r.summary ?? r.title ?? "").trim(),
+      description: String(r.description ?? "").trim(),
+      label: label === "simple" || label === "complex" ? label : "",
+    };
+  }).filter((x) => x.summary || x.description);
+  if (!list.length) throw new Error("Không có ticket nào có summary/title hoặc description.");
+  return list;
+}
+
+function loadTickets(text, source) {
+  if (running) return;
+  try {
+    tickets = parseTickets(text);
+    execs = tickets.map(newExec);
+    $("importMsg").className = "msg";
+    $("importMsg").textContent = `Đã import ${tickets.length} ticket từ ${source}` + (tickets.some((x) => x.label) ? " (có nhãn → tính accuracy)." : ".");
+    select(0);
+  } catch (e) {
+    $("importMsg").className = "msg err";
+    $("importMsg").textContent = `Import lỗi: ${e.message}`;
+  }
+}
+$("sample").onclick = async () => loadTickets(await (await fetch("/sample/tickets.jsonl")).text(), "dữ liệu mẫu");
+$("file").onchange = async (e) => { const f = e.target.files[0]; if (f) loadTickets(await f.text(), f.name); };
+$("importPaste").onclick = () => loadTickets($("paste").value, "nội dung đã dán");
+
+// ---- pipeline execution ----------------------------------------------------
+const now = () => new Date().toLocaleTimeString("vi-VN", { hour12: false });
+const pctTok = (lp) => `${(Math.exp(lp) * 100).toFixed(1)}%`;
+
+function log(ex, level, scope, text) {
+  ex.logs.push({ t: now(), level, scope, text });
+  if (execs[selected] === ex) renderLog();
+}
+function setNode(ex, id, patch) {
+  ex.nodes[id] = { ...(ex.nodes[id] ?? {}), ...patch };
+  if (execs[selected] === ex) { renderCanvas(); if (selectedNode === id) renderDetails(); }
+}
+
+async function ask(name, model, state) {
+  const res = await fetch("/v1/systemone", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-TSolve-Trace": "1" },
+    body: JSON.stringify({ model, state, questions: { [name]: questions[name] } }),
+  });
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+  return { answer: body.answers[name], trace: body.trace[name], served: body.model };
+}
+
+function explain(ex, name, answer, trace) {
+  const q = questions[name];
+  log(ex, "THINK", name, `Đọc state và câu hỏi "${q.instructions}"`);
+  trace.runs.forEach((run, k) => {
+    const tag = trace.runs.length > 1 ? `Lượt ${k + 1}${k ? " (đảo thứ tự)" : ""}: ` : "";
+    log(ex, "THINK", name, `${tag}đáp án ${run.order.map((key, i) => `${LETTERS[i]}) ${key}`).join("  ")}`);
+    log(ex, "THINK", name, `${tag}token tiếp theo model muốn viết: ${run.top_logprobs.slice(0, 4).map((t) => `${JSON.stringify(t.token)} ${pctTok(t.logprob)}`).join(" · ")} → ${run.order.map((key, i) => `${key} ${run.distribution[i].toFixed(2)}`).join(", ")}`);
+  });
+  const avg = trace.options.map((o, i) => `${o.key} ${trace.distribution[i].toFixed(2)}`).join(", ");
+  log(ex, "THINK", name, trace.runs.length > 1 ? `Trung bình hai lượt để khử thiên lệch vị trí → ${avg}` : `Chuẩn hoá trên các chữ cái đáp án → ${avg}`);
+  const verdict = answer.type === "choice" ? `chọn "${answer.choice}" (confidence ${answer.confidence})`
+    : answer.type === "noul" ? `P(có) = ${answer.noul}`
+    : `điểm kỳ vọng ${answer.score} trên thang 0–${trace.options.length - 1}`;
+  log(ex, "DECIDE", name, `${verdict} · ${trace.ms} ms`);
+}
+
+async function runTicket(i) {
+  const t = tickets[i];
+  const ex = (execs[i] = newExec());
+  const model = $("model").value;
+  const threshold = Number($("threshold").value);
+  ex.status = "running"; ex.model = model; ex.threshold = threshold; ex.startedAt = new Date(); ex.t0 = performance.now();
+  select(i);
+
+  setNode(ex, "start", { status: "success" });
+  setNode(ex, "import", { status: "success", ms: 0 });
+  log(ex, "INFO", "import", `Nhận ticket ${t.id}: "${t.summary}"`);
+
+  const state = { summary: t.summary, description: t.description };
+  ex.state = state;
+  setNode(ex, "state", { status: "success", ms: 0 });
+  log(ex, "INFO", "state", "Ghép summary + description thành state JSON (demo chưa mask PII; hệ thống thật mask trước khi gửi)");
+  log(ex, "INFO", "model", `Gửi 3 câu hỏi song song tới ${model} qua POST /v1/systemone`);
+
+  // the three questions read the same state in parallel, like Jev
+  await Promise.all(QUESTION_NODES.map(async (name) => {
+    setNode(ex, name, { status: "running" });
+    const t0 = performance.now();
+    try {
+      const { answer, trace } = await ask(name, model, state);
+      ex.answers[name] = answer; ex.traces[name] = trace;
+      setNode(ex, name, { status: "success", ms: Math.round(performance.now() - t0) });
+      explain(ex, name, answer, trace);
+    } catch (e) {
+      ex.errors = { ...(ex.errors ?? {}), [name]: e.message };
+      setNode(ex, name, { status: "failed", ms: Math.round(performance.now() - t0) });
+      log(ex, "ERROR", name, e.message);
+    }
+  }));
+
+  // GBR-35: Simple only when the model chose simple with enough probability; any AI error means Complex
+  const tri = ex.answers.triage;
+  if (!tri) { ex.final = "complex"; ex.reason = "AI lỗi hoặc quá thời gian → coi là Complex"; }
+  else if (tri.choice !== "simple") { ex.final = "complex"; ex.reason = `model chọn complex (P(simple) = ${tri.probabilities.simple})`; }
+  else if (tri.probabilities.simple < threshold) { ex.final = "complex"; ex.reason = `P(simple) = ${tri.probabilities.simple} < ngưỡng ${threshold} → không đủ chắc`; }
+  else { ex.final = "simple"; ex.reason = `P(simple) = ${tri.probabilities.simple} ≥ ngưỡng ${threshold}`; }
+  setNode(ex, "rule", { status: "success", ms: 0 });
+  log(ex, "DECIDE", "rule", `${ex.reason} → ${ex.final.toUpperCase()}`);
+
+  const taken = ex.final === "simple" ? "route_simple" : "route_complex";
+  setNode(ex, taken, { status: "success", ms: 0 });
+  setNode(ex, taken === "route_simple" ? "route_complex" : "route_simple", { status: "skipped" });
+  log(ex, "INFO", "route", ex.final === "simple"
+    ? "Hiện Solution gợi ý kèm nguồn ngay trong form Create issue"
+    : "Gắn nhãn tsolve-needs-handler; issue chưa có assignee thì giao cho Escalation handler");
+  setNode(ex, "end", { status: "success" });
+
+  ex.ms = Math.round(performance.now() - ex.t0);
+  ex.status = ex.errors ? "failed" : "success";
+  if (t.label) log(ex, t.label === ex.final ? "DECIDE" : "ERROR", "eval", `Nhãn đúng: ${t.label} → ${t.label === ex.final ? "khớp ✓" : "sai ✗"}`);
+  renderAll();
+}
+
+async function runMany(indexes) {
+  if (!questions) questions = await (await fetch("/local/questions")).json();
+  running = true; stopRequested = false; renderButtons();
+  for (const i of indexes) {
+    if (stopRequested) break;
+    await runTicket(i);
+  }
+  running = false; renderButtons();
+}
+$("runOne").onclick = () => runMany([selected]);
+$("runAll").onclick = () => runMany(tickets.map((_, i) => i));
+$("stop").onclick = () => { stopRequested = true; };
+
+// ---- render ----------------------------------------------------------------
+function select(i) {
+  selected = i;
+  renderAll();
+}
+
+function renderAll() {
+  renderButtons(); renderHead(); renderCanvas(); renderDetails(); renderLog(); renderTickets(); renderSummary();
+}
+
+function renderButtons() {
+  $("runOne").disabled = running || selected < 0;
+  $("runAll").disabled = running || !tickets.length;
+  $("stop").disabled = !running;
+}
+
+function renderHead() {
+  const t = tickets[selected], ex = execs[selected];
+  if (!t) return;
+  $("crumbTicket").textContent = t.id;
+  $("title").textContent = t.summary || t.description;
+  $("subtitle").textContent = `${t.id}${t.label ? ` · nhãn: ${t.label}` : ""}${ex.final ? ` · kết quả: ${ex.final}` : ""}`;
+  const label = { idle: "CHƯA CHẠY", running: "ĐANG CHẠY", success: "THÀNH CÔNG", failed: "CÓ LỖI AI" }[ex.status];
+  $("status").className = `status st-${ex.status}`;
+  $("status").textContent = label;
+  $("timing").textContent = ex.startedAt ? `Bắt đầu ${ex.startedAt.toLocaleTimeString("vi-VN", { hour12: false })}${ex.ms != null ? ` · ${ex.ms} ms` : ""} · ${ex.model}` : "";
+}
+
+function renderCanvas() {
+  const ex = execs[selected] ?? newExec();
+  const st = (id) => ex.nodes[id]?.status ?? "pending";
+  const half = (id) => (NODES[id].terminal ? 9 : 24);
+  const paths = EDGES.map(([a, b]) => {
+    const A = NODES[a], B = NODES[b];
+    const x1 = A.x + half(a), x2 = B.x - half(b), mx = (x1 + x2) / 2;
+    const cls = st(b) === "skipped" ? "skipped" : st(a) === "success" && ["success", "running"].includes(st(b)) ? "done" : "";
+    return `<path class="edge ${cls}" d="M${x1},${A.y} C${mx},${A.y} ${mx},${B.y} ${x2},${B.y}"/>`;
+  }).join("");
+  const model = ex.model ?? $("model").value ?? "";
+  const groups = `
+    <div class="group" style="left:365px;top:22px;width:190px;height:278px"><span>Model · ${esc(model)} · song song</span></div>
+    <div class="group" style="left:770px;top:42px;width:150px;height:236px"><span>Định tuyến</span></div>`;
+  const nodes = Object.entries(NODES).map(([id, n]) => {
+    if (n.terminal) return `<div class="terminal ${st(id)}" style="left:${n.x}px;top:${n.y}px"></div>`;
+    const s = st(id), ms = ex.nodes[id]?.ms;
+    const tick = s === "success" ? '<span class="tick">✓</span>' : s === "failed" ? '<span class="tick">✕</span>' : "";
+    return `<div class="node ${s} ${n.diamond ? "diamond" : ""} ${selectedNode === id ? "sel" : ""}" data-node="${id}" style="left:${n.x}px;top:${n.y}px">
+      <div class="box"><em>${esc(n.glyph)}</em>${tick}</div>
+      <div class="label">${esc(n.label)}<small>${esc(n.sub ?? "")}${ms ? ` · ${ms} ms` : ""}</small></div>
+    </div>`;
+  }).join("");
+  $("canvas").innerHTML = `<svg width="1040" height="310">${paths}</svg>${groups}${nodes}`;
+  for (const el of document.querySelectorAll("[data-node]")) {
+    el.onclick = () => { selectedNode = el.dataset.node; renderCanvas(); renderDetails(); };
+  }
+}
+
+const pre = (v) => `<pre>${esc(typeof v === "string" ? v : JSON.stringify(v, null, 2))}</pre>`;
+const kv = (pairs) => `<dl class="kv">${pairs.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("")}</dl>`;
+
+function renderDetails() {
+  const t = tickets[selected], ex = execs[selected], id = selectedNode;
+  if (!t || !id || !NODES[id] || NODES[id].terminal) {
+    $("details").innerHTML = '<div class="empty">Bấm vào một bước trong pipeline để xem input, output và prompt.</div>';
+    return;
+  }
+  const n = NODES[id], s = ex.nodes[id]?.status ?? "pending";
+  let body = "";
+  if (id === "import") body = `<h5>Dòng dữ liệu đã import</h5>${pre(t.raw)}`;
+  else if (id === "state") body = `<h5>State gửi cho model</h5>${pre(ex.state ?? { summary: t.summary, description: t.description })}
+    <p class="msg">Hệ thống thật mask PII trước bước này (GBR-44); demo bỏ qua bước mask.</p>`;
+  else if (QUESTION_NODES.includes(id)) {
+    const q = questions?.[id], a = ex.answers[id], tr = ex.traces[id];
+    body = kv([["Loại", esc(q?.type ?? n.sub)], ["Câu hỏi", esc(q?.instructions ?? "")]]);
+    if (tr) {
+      tr.runs.forEach((run, k) => {
+        const title = tr.runs.length > 1 ? ` · lượt ${k + 1}${k ? " (đảo thứ tự)" : ""}` : "";
+        body += `<h5>Prompt model nhìn thấy${title}</h5>${pre(`[system]\n${run.prompt.system}\n\n[user]\n${run.prompt.user}\n\n[assistant, điền sẵn]\n${run.prompt.assistant} ▌ ← token tiếp theo là đáp án`)}`;
+        body += `<h5>Token tiếp theo (top logprobs)${title}</h5><table class="probs">${run.top_logprobs.map((x) =>
+          `<tr><td class="mono">${esc(JSON.stringify(x.token))}</td><td>${pctTok(x.logprob)}</td><td><div class="pbar"><i style="width:${Math.exp(x.logprob) * 100}%"></i></div></td></tr>`).join("")}</table>`;
+      });
+      body += `<h5>Xác suất từng đáp án${tr.runs.length > 1 ? " (trung bình hai lượt)" : ""}</h5><table class="probs">${tr.options.map((o, i) =>
+        `<tr><td>${LETTERS[i]}) ${esc(o.key)}</td><td>${tr.distribution[i].toFixed(3)}</td><td><div class="pbar"><i style="width:${tr.distribution[i] * 100}%"></i></div></td></tr>`).join("")}</table>`;
+      body += `<h5>Output (đúng format Jev)</h5>${pre(a)}`;
+    } else if (ex.errors?.[id]) body += `<h5>Lỗi</h5>${pre(ex.errors[id])}`;
+  } else if (id === "rule") {
+    body = ex.final ? kv([["Ngưỡng", esc(ex.threshold)], ["P(simple)", esc(ex.answers.triage?.probabilities.simple ?? "–")], ["Lý do", esc(ex.reason)], ["Kết quả", `<span class="badge b-${ex.final}">${ex.final}</span>`]])
+      : '<p class="msg">GBR-35: Simple chỉ khi model chọn simple và P(simple) ≥ ngưỡng; mọi lỗi/timeout của AI → Complex.</p>';
+  } else if (id === "route_simple") body = '<p>Simple: T-Solve Jira App hiện Solution gợi ý (tối đa 3 nguồn) ngay trong field T-Solve Suggestion của form Create issue.</p>';
+  else if (id === "route_complex") body = '<p>Complex: không gợi ý; gắn nhãn <code>tsolve-needs-handler</code>, issue chưa có assignee thì giao cho Escalation handler (GBR-37).</p>';
+  $("details").innerHTML = `<h4>${esc(n.label)}</h4>${kv([["Trạng thái", esc(s)], ["Thời gian", ex.nodes[id]?.ms != null ? `${ex.nodes[id].ms} ms` : "–"]])}${body}`;
+}
+
+function renderLog() {
+  const ex = execs[selected];
+  const el = $("log");
+  if (!ex || !ex.logs.length) { el.innerHTML = '<div class="empty" style="display:block">Chạy pipeline để xem model suy luận từng bước.</div>'; return; }
+  el.innerHTML = ex.logs.map((l) => `<div><span class="t">${l.t}</span><span class="${l.level}">${l.level}</span><span class="scope">[${esc(l.scope)}]</span><span class="text">${esc(l.text)}</span></div>`).join("");
+  el.scrollTop = el.scrollHeight;
+}
+
+function renderTickets() {
+  $("tickets").innerHTML = tickets.map((t, i) => {
+    const ex = execs[i];
+    const mark = ex.final && t.label ? (ex.final === t.label ? '<span class="right">✓</span>' : '<span class="wrong">✗</span>') : "";
+    const result = ex.final ? `<span class="badge b-${ex.final}">${ex.final}</span> ${mark}` : "";
+    return `<li class="${i === selected ? "sel" : ""}" data-i="${i}"><span class="dot ${ex.status}"></span>
+      <div style="min-width:0"><div class="id">${esc(t.id)}${t.label ? ` · nhãn ${t.label}` : ""}</div><div class="sum">${esc(t.summary || t.description)}</div></div>
+      <div>${result}</div></li>`;
+  }).join("");
+  for (const li of document.querySelectorAll("#tickets li")) li.onclick = () => { if (!running) select(Number(li.dataset.i)); };
+}
+
+function renderSummary() {
+  const done = execs.map((ex, i) => ({ ex, t: tickets[i] })).filter((x) => x.ex.final);
+  const count = (c) => done.filter((x) => x.ex.final === c).length;
+  const labelled = done.filter((x) => x.t.label);
+  const acc = labelled.length ? `${Math.round((labelled.filter((x) => x.t.label === x.ex.final).length / labelled.length) * 100)}%` : "–";
+  const ms = done.map((x) => x.ex.ms).sort((a, b) => a - b);
+  const p95 = ms.length ? `${ms[Math.min(ms.length - 1, Math.ceil(0.95 * ms.length) - 1)]}` : "–";
+  const cards = [["Đã chạy", `${done.length}/${tickets.length}`], ["Simple", count("simple")], ["Complex", count("complex")],
+    ["Accuracy", acc], ["p95 ms", p95], ["Lỗi AI", done.filter((x) => x.ex.errors).length]];
+  $("cards").innerHTML = cards.map(([k, v]) => `<div class="card"><b>${esc(v)}</b><span>${esc(k)}</span></div>`).join("");
+  // a model that always picks the first option gives one raw triage choice for every ticket
+  const raw = done.map((x) => x.ex.answers.triage?.choice).filter(Boolean);
+  const oneSided = raw.length >= 5 && new Set(raw).size === 1;
+  $("bias").hidden = !oneSided;
+  $("bias").textContent = oneSided ? `Model chọn "${raw[0]}" cho mọi ticket: dấu hiệu thiên lệch vị trí (luôn chọn đáp án đầu). Thử model lớn hơn.` : "";
+}
+
+(async () => {
+  const { default: def, models } = await (await fetch("/local/models")).json();
+  $("model").innerHTML = models.map((m) => `<option ${m === def ? "selected" : ""}>${esc(m)}</option>`).join("");
+  renderCanvas(); renderLog();
+})();
+</script>
+</body>
+</html>

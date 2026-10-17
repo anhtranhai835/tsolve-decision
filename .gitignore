@@ -1,0 +1,18 @@
+# dependencies (none today, but keep them out if someone adds one)
+node_modules/
+
+# local settings and secrets
+.env
+.env.*
+*.local
+
+# logs and harness output
+*.log
+results/
+
+# editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
