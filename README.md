@@ -24,7 +24,7 @@ Cần Node 24+ và Ollama. Không có dependency nào, không cần `npm install
 
 ```bash
 ollama pull qwen3:4b
-ollama pull bge-m3
+ollama pull qwen3-embedding:4b
 npm run server      # terminal 1, rồi mở http://127.0.0.1:8787/
 npm run demo        # terminal 2 (bản dòng lệnh)
 npm run harness     # đánh giá 20 ticket mẫu (phân loại theo nội dung)
@@ -33,7 +33,7 @@ npm run harness:sources -- --report --model qwen3:4b    # không gọi model: ch
 npm test
 ```
 
-Biến môi trường (đều có mặc định): `LOCAL_MODEL` (`qwen3:4b`), `SIM_GATE` (0.8, ngưỡng similarity của GBR-35, chọn bằng harness), `AI_MIN` (`argmax` = theo đáp án AI chọn; hoặc một số, ví dụ 0.2 = xác suất AI chấm 2 tối thiểu), `ORDER_DEBIAS` (1 = xoay vị trí đáp án), `OLLAMA_URL`, `EMBED_MODEL` (`bge-m3`), `KB_PATH`, `PORT` (8787), `QUESTION_TIMEOUT_MS` (120000; SRS yêu cầu 8000 nhưng demo trên CPU cần nhiều hơn), `TSOLVE_DECISION_TIMEOUT_MS` (300000), `TSOLVE_DECISION_BASE_URL`, `TSOLVE_DECISION_API_KEY` (server local bỏ qua key này).
+Biến môi trường (đều có mặc định): `LOCAL_MODEL` (`qwen3:4b`), `SIM_GATE` (0.7 với qwen3-embedding:4b; 0.8 nếu dùng bge-m3; ngưỡng similarity của GBR-35, chọn bằng harness), `AI_MIN` (`argmax` = theo đáp án AI chọn; hoặc một số, ví dụ 0.2 = xác suất AI chấm 2 tối thiểu), `ORDER_DEBIAS` (1 = xoay vị trí đáp án), `OLLAMA_URL`, `EMBED_MODEL` (`qwen3-embedding:4b`), `TSOLVE_DATA_DIR` (thư mục dữ liệu mật và mọi thứ sinh ra từ nó: cache vector, kết quả harness; mặc định `data/private`), `KB_PATH`, `PORT` (8787), `QUESTION_TIMEOUT_MS` (120000; SRS yêu cầu 8000 nhưng demo trên CPU cần nhiều hơn), `TSOLVE_DECISION_TIMEOUT_MS` (300000), `TSOLVE_DECISION_BASE_URL`, `TSOLVE_DECISION_API_KEY` (server local bỏ qua key này).
 
 **Harness triage theo nguồn** (`harness-sources.ts`): chia cố định 105 query có nhãn thành dev (52) và test (53) theo mã query. Chế độ chạy ghi lại, cho từng nguồn, similarity, điểm nhóm chấm, xác suất AI cho 2/1/0. Chế độ `--report` thử 3 cách quyết định: chỉ dùng similarity; similarity + AI tự chọn; similarity + ngưỡng xác suất AI (GBR-35). Với mỗi cách, nó chọn luật trên dev (recall Simple cao nhất mà precision Simple ≥ 90% theo NFR của SRS), rồi chấm đúng một lần trên test. Model mới phải **vượt đường "chỉ dùng similarity"** thì mới đáng dùng.
 

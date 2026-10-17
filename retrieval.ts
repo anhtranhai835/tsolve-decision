@@ -1,17 +1,28 @@
-// Finds resolved tickets similar to a new issue with a local embedding model (bge-m3 on Ollama).
+// Finds resolved tickets similar to a new issue with a local embedding model on Ollama (EMBED_MODEL,
+// default qwen3-embedding:4b, which beat bge-m3 on the team split: test 79%/88%/73% vs 70%/82%/60%).
 // The knowledge base is the "ticket" rows of the team dataset; vectors are cached on disk so the
 // 486 tickets are embedded once, not at every start.
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export type KbTicket = { id: string; title: string; excerpt: string };
 export type Source = KbTicket & { similarity: number };
 
 const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://localhost:11434";
-export const EMBED_MODEL = process.env.EMBED_MODEL ?? "bge-m3";
-export const KB_PATH = process.env.KB_PATH ?? fileURLToPath(new URL("./data/private/tsolve-labelled-dataset.jsonl", import.meta.url));
-const CACHE_PATH = KB_PATH.replace(/\.jsonl$/, "") + `.${EMBED_MODEL}.embeddings.json`;
+export const EMBED_MODEL = process.env.EMBED_MODEL ?? "qwen3-embedding:4b";
+// Folder for the team's confidential data and everything derived from it (vector caches, harness
+// runs, generated answers). Default data/private (gitignored); TSOLVE_DATA_DIR moves it off the repo.
+export const DATA_DIR = process.env.TSOLVE_DATA_DIR ?? fileURLToPath(new URL("./data/private/", import.meta.url));
+export const KB_PATH = process.env.KB_PATH ?? join(DATA_DIR, "tsolve-labelled-dataset.jsonl");
+const CACHE_PATH = KB_PATH.replace(/\.jsonl$/, "") + `.${EMBED_MODEL.replace(/[^\w.-]/g, "_")}.embeddings.json`;
+// Qwen3-Embedding is trained with an instruction on the query side only; bge-m3 takes none.
+const QUERY_PREFIX =
+  process.env.EMBED_QUERY_PREFIX ??
+  (EMBED_MODEL.startsWith("qwen3-embedding")
+    ? "Instruct: Given a new IT support issue, retrieve resolved tickets that describe the same problem\nQuery: "
+    : "");
 
 // What gets embedded for a ticket: its title and the start of its solution.
 const ticketText = (t: KbTicket) => `${t.title}\n${t.excerpt}`.slice(0, 1000);
@@ -87,6 +98,6 @@ export async function searchSources(text: string, k = 3, excludeTitle?: string):
   const all = await kbIndex();
   const items = excludeTitle ? all.filter((it) => !sameText(it.ticket.title, excludeTitle)) : all;
   if (!items.length) return [];
-  const [query] = await embed([text]);
+  const [query] = await embed([QUERY_PREFIX + text]);
   return topK(query, items, k).map(({ index, similarity }) => ({ ...items[index].ticket, similarity: Math.round(similarity * 1e4) / 1e4 }));
 }

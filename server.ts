@@ -21,7 +21,7 @@ const MAX_QUESTIONS = 8;
 const PREFILL = "Answer:";
 // GBR-35 similarity gate: only sources at least this similar are shown to the AI. Pick it with
 // `npm run harness:sources -- --report` (chosen on dev to reach the SRS Simple precision target).
-const SIM_GATE = Number(process.env.SIM_GATE ?? 0.8); // chosen on dev 17/10/2026 (bge-m3), matches GBR-35
+const SIM_GATE = Number(process.env.SIM_GATE ?? 0.7); // chosen on dev 17/10/2026 for qwen3-embedding:4b (0.80 for bge-m3)
 // GBR-35 AI confidence: a source applies when P(same_problem) >= AI_MIN; "argmax" uses the AI's own pick
 // default "argmax": with qwen3:4b the confidence variant scored the same on test (harness 17/10/2026)
 const AI_MIN: number | "argmax" = process.env.AI_MIN && process.env.AI_MIN !== "argmax" ? Number(process.env.AI_MIN) : "argmax";

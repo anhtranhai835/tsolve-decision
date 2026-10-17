@@ -1,0 +1,2 @@
+# install torch CPU first: pip install torch --index-url https://download.pytorch.org/whl/cpu
+sentence-transformers>=4

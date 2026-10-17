@@ -1,16 +1,21 @@
-// Source-based triage harness (UC-38 / GBR-35) on the team's graded queries (data/private).
+// Source-based triage harness (UC-38 / GBR-35) on the team's graded queries (TSOLVE_DATA_DIR,
+// default data/private).
 //
 // run     npm run harness:sources -- --model <ollama model> [--split dev|test|all] [--limit N]
 //         Finds the top 3 sources of each labelled query, asks the AI to grade each 2/1/0, and
-//         appends one line per query to data/private/runs/<model>.jsonl. Re-running resumes: queries
+//         appends one line per query to <data dir>/runs/<model>.jsonl. Re-running resumes: queries
 //         already recorded with the same question wording are skipped.
 // report  npm run harness:sources -- --report [--model <ollama model>]
 //         No model calls. Retrieval hit@k, AI vs team grades, and triage for each similarity gate.
 //         The gate is chosen on dev (smallest gate whose Simple precision reaches the SRS target,
 //         NFR: precision of Simple >= 90%) and scored once on test.
+// retrieval  EMBED_MODEL=<ollama embedding> npm run harness:sources -- --retrieval [--rerank | --rerank-scores <file>] [--export <file>]
+//         No LLM. Compares the embedding model (and, with --rerank, the cross-encoder sidecar in
+//         rerank/server.py) on the same split: similarity only, reranker only, similarity + reranker.
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
-import { KB_PATH, searchSources } from "./retrieval.ts";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { DATA_DIR, EMBED_MODEL, KB_PATH, searchSources } from "./retrieval.ts";
 import { DecisionClient } from "./sdk/index.ts";
 import { sourceChecks, sourceMatch } from "./tsolve-questions.ts";
 
@@ -30,8 +35,8 @@ const arg = (name: string) => {
 const model = arg("--model") ?? process.env.LOCAL_MODEL ?? "qwen3:4b";
 const split = (arg("--split") ?? "all") as "dev" | "test" | "all";
 const limit = Number(arg("--limit")) || Infinity;
-const RUNS_DIR = new URL("./data/private/runs/", import.meta.url);
-const runFile = new URL(`${model.replace(/[^\w.-]/g, "_")}.jsonl`, RUNS_DIR);
+const RUNS_DIR = join(DATA_DIR, "runs");
+const runFile = join(RUNS_DIR, `${model.replace(/[^\w.-]/g, "_")}.jsonl`);
 // runs only count for the current wording of the question
 const questionId = createHash("sha1").update(JSON.stringify(sourceMatch)).digest("hex").slice(0, 8);
 
@@ -162,4 +167,107 @@ async function report() {
   console.log(`latency per query p50 ${ms[Math.floor(ms.length / 2)]} ms  p95 ${ms[Math.min(ms.length - 1, Math.ceil(0.95 * ms.length) - 1)]} ms`);
 }
 
-await (process.argv.includes("--report") ? report() : run());
+// ---- retrieval: embedding and reranker, no LLM ---------------------------------------
+const RERANK_URL = process.env.RERANK_URL ?? "http://127.0.0.1:8790";
+const CANDIDATES = 10; // the reranker may reorder the top 10, so it can also fix retrieval misses
+
+type Cand = { ticket: string; sim: number; rr: number | null; team: number | null };
+type QRow = { id: string; label: Label; split: "dev" | "test"; cands: Cand[] };
+
+async function rerank(query: string, docs: string[]): Promise<number[]> {
+  const res = await fetch(`${RERANK_URL}/rerank`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query, docs }),
+  });
+  if (!res.ok) throw new Error(`reranker ${res.status}: ${await res.text()}`);
+  return (await res.json()).scores;
+}
+
+// Simple when some candidate passes; the suggestion is the passing candidate ranked first.
+function scoreRows(rows: QRow[], pick: (r: QRow) => Cand | undefined): Metrics {
+  let ok = 0, ss = 0, sN = 0, cc = 0, cN = 0, predS = 0, predSOk = 0, good = 0, bad = 0;
+  for (const r of rows) {
+    const hit = pick(r);
+    const got: Label = hit ? "simple" : "complex";
+    if (got === r.label) ok++;
+    if (r.label === "simple") { sN++; if (hit) ss++; } else { cN++; if (!hit) cc++; }
+    if (hit) { predS++; if (r.label === "simple") predSOk++; if (hit.team === 2) good++; if (hit.team === 0) bad++; }
+  }
+  const div = (a: number, b: number) => (b ? a / b : 0);
+  return { n: rows.length, acc: div(ok, rows.length), recallSimple: div(ss, sN), recallComplex: div(cc, cN), precisionSimple: div(predSOk, predS), shown: predS, good, bad };
+}
+
+async function retrievalReport() {
+  // --rerank-scores <file>: reranker scores computed offline (rerank/train.py), one JSON line
+  // {query, ticket, score}; dev scores there are out-of-fold, so rules picked on dev stay honest
+  const scoresFile = arg("--rerank-scores");
+  const fileScores = new Map<string, number>();
+  if (scoresFile) {
+    for (const l of readFileSync(scoresFile, "utf8").split("\n").filter((x) => x.trim())) {
+      const s = JSON.parse(l);
+      fileScores.set(`${s.query}|${s.ticket}`, s.score);
+    }
+  }
+  const withRerank = process.argv.includes("--rerank") || Boolean(scoresFile);
+  const exportFile = arg("--export"); // top-10 candidates per query, for rerank/train.py to score
+  const EMBED = EMBED_MODEL;
+  const rows: QRow[] = [];
+  let rrMs = 0;
+  for (const q of queries.filter((x) => x.triage)) {
+    const found = await searchSources(q.summary, CANDIDATES, q.summary);
+    let rr: (number | null)[] = found.map(() => null);
+    if (scoresFile) {
+      rr = found.map((s) => fileScores.get(`${q.id}|${s.id}`) ?? null);
+      if (rr.some((x) => x === null)) throw new Error(`no reranker score for some candidates of ${q.id}; re-export and re-score`);
+    } else if (withRerank) {
+      const t0 = performance.now();
+      rr = await rerank(q.summary, found.map((s) => `${s.title}\n${s.excerpt.slice(0, 600)}`));
+      rrMs += performance.now() - t0;
+    }
+    rows.push({ id: q.id, label: q.triage as Label, split: splitOf(q.id), cands: found.map((s, i) => ({ ticket: s.id, sim: s.similarity, rr: rr[i], team: gradeOf(q, s.id) })) });
+  }
+  const dev = rows.filter((r) => r.split === "dev"), test = rows.filter((r) => r.split === "test");
+  if (exportFile) {
+    writeFileSync(exportFile, rows.map((r) => JSON.stringify({ id: r.id, split: r.split, label: r.label, cands: r.cands.map((c) => ({ ticket: c.ticket, sim: c.sim })) })).join("\n") + "\n");
+    console.log(`exported top-${CANDIDATES} candidates of ${rows.length} queries to ${exportFile}`);
+  }
+
+  // retrieval quality: is a ticket graded 2 at the top (embedding order, then reranker order)?
+  const hitAt = (order: (r: QRow) => Cand[], k: number) => {
+    const fix = rows.filter((r) => r.cands.some((c) => c.team === 2) || queries.find((q) => q.id === r.id)!.candidates.some((c) => c.grade === 2));
+    return pct(fix.filter((r) => order(r).slice(0, k).some((c) => c.team === 2)).length, fix.length);
+  };
+  const bySim = (r: QRow) => r.cands;
+  const byRr = (r: QRow) => [...r.cands].sort((a, b) => (b.rr ?? 0) - (a.rr ?? 0));
+  console.log(`${EMBED}${withRerank ? " + reranker" : ""} on ${rows.length} labelled queries (dev ${dev.length}, test ${test.length})`);
+  console.log(`  embedding order: hit@1 ${hitAt(bySim, 1)}  hit@3 ${hitAt(bySim, 3)}  hit@10 ${hitAt(bySim, 10)}`);
+  if (withRerank) console.log(`  reranker order:  hit@1 ${hitAt(byRr, 1)}  hit@3 ${hitAt(byRr, 3)}  (reranker ${Math.round(rrMs / rows.length)} ms per query for ${CANDIDATES} docs)`);
+
+  // decision rules, each picked on dev (best Simple recall with precision >= target), scored on test
+  const sims = [0, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9];
+  const rrs = [0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9];
+  type R = { name: string; pick: (r: QRow) => Cand | undefined };
+  const family: [string, R[]][] = [
+    ["similarity only (top 3)", sims.map((g) => ({ name: `sim>=${g}`, pick: (r) => r.cands.slice(0, 3).find((c) => c.sim >= g) }))],
+  ];
+  if (withRerank) {
+    family.push(["reranker only (top 10)", rrs.map((t) => ({ name: `rr>=${t}`, pick: (r) => byRr(r).find((c) => (c.rr ?? 0) >= t) }))]);
+    family.push(["similarity + reranker (GBR-35)", sims.flatMap((g) => rrs.map((t) => ({ name: `sim>=${g} & rr>=${t}`, pick: (r: QRow) => byRr(r).find((c) => c.sim >= g && (c.rr ?? 0) >= t) })))]);
+  }
+  console.log(`\nChosen on dev (best Simple recall with Simple precision >= ${SIMPLE_PRECISION_TARGET * 100}%), scored on test:`);
+  for (const [name, rules] of family) {
+    const ok = rules.filter((x) => { const m = scoreRows(dev, x.pick); return m.shown > 0 && m.precisionSimple >= SIMPLE_PRECISION_TARGET; });
+    const best = (ok.length ? ok : rules).reduce((a, b) => {
+      const ma = scoreRows(dev, a.pick), mb = scoreRows(dev, b.pick);
+      const key = (m: Metrics) => (ok.length ? [m.recallSimple, m.acc] : [m.precisionSimple, m.recallSimple]);
+      const [a1, a2] = key(ma), [b1, b2] = key(mb);
+      return b1 > a1 || (b1 === a1 && b2 > a2) ? b : a;
+    });
+    console.log(`  ${name}: ${best.name}${ok.length ? "" : " (target not reached on dev)"}`);
+    console.log(`    ${row("dev", scoreRows(dev, best.pick))}`);
+    console.log(`    ${row("TEST", scoreRows(test, best.pick))}`);
+  }
+}
+
+await (process.argv.includes("--retrieval") ? retrievalReport() : process.argv.includes("--report") ? report() : run());
