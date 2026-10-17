@@ -5,7 +5,8 @@ import { createServer, type IncomingMessage } from "node:http";
 import { zstdDecompressSync } from "node:zlib";
 import { answerFor, averageOverOrders, letterDistribution, optionsOf, promptFor } from "./decision.ts";
 import type { Question } from "./sdk/index.ts";
-import { TSOLVE_QUESTIONS } from "./tsolve-questions.ts";
+import { EMBED_MODEL, kbIndex, searchSources } from "./retrieval.ts";
+import { sourceChecks, TSOLVE_QUESTIONS } from "./tsolve-questions.ts";
 
 const STATIC: Record<string, { path: string; type: string }> = {
   "/": { path: "./public/index.html", type: "text/html; charset=utf-8" },
@@ -110,10 +111,23 @@ createServer(async (req, res) => {
     if (req.url === "/local/models") {
       try {
         const tags = await (await fetch(`${OLLAMA_URL}/api/tags`)).json();
-        return send(200, { default: LOCAL_MODEL, models: tags.models.map((m: { name: string }) => m.name) });
+        const names: string[] = tags.models.map((m: { name: string }) => m.name);
+        return send(200, { default: LOCAL_MODEL, models: names.filter((n) => !n.startsWith(EMBED_MODEL)) });
       } catch {
         return send(200, { default: LOCAL_MODEL, models: [LOCAL_MODEL] });
       }
+    }
+  }
+  if (req.method === "POST" && req.url === "/local/retrieve") {
+    // source search for the demo: top-k resolved tickets, plus the ready System One request that
+    // asks the AI whether each one applies (same builder the harness uses)
+    try {
+      const issue = JSON.parse(await readBody(req));
+      const t0 = performance.now();
+      const sources = await searchSources(`${issue.summary ?? ""}\n${issue.description ?? ""}`, Number(issue.k) || 3, issue.exclude_same_title ? issue.summary : undefined);
+      return send(200, { embed_model: EMBED_MODEL, ms: Math.round(performance.now() - t0), sources, requests: sourceChecks(issue, sources) });
+    } catch (e) {
+      return send(502, { error: (e as Error).message });
     }
   }
   if (req.method !== "POST" || req.url !== "/v1/systemone") return send(404, { error: "POST /v1/systemone only" });
@@ -187,4 +201,6 @@ createServer(async (req, res) => {
   }
 }).listen(PORT, "127.0.0.1", () => {
   console.log(`T-Solve decision server: demo UI http://127.0.0.1:${PORT}/ , API /v1/systemone -> Ollama ${OLLAMA_URL} (${LOCAL_MODEL})`);
+  // build the source index in the background so the first search does not wait for it
+  kbIndex().then((items) => console.log(`source index ready: ${items.length} tickets (${EMBED_MODEL})`), (e) => console.error(`source index failed: ${e.message}`));
 });

@@ -72,7 +72,7 @@
   .exec-head { padding: 12px 16px; background: var(--panel); border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: baseline; }
   .exec-head h2 { margin: 0; font-size: 17px; }
   .canvas-wrap { overflow-x: auto; background: var(--canvas); background-image: radial-gradient(var(--dots) 1px, transparent 1px); background-size: 16px 16px; border-bottom: 1px solid var(--line); }
-  .canvas { position: relative; width: 1040px; height: 310px; margin: 0 auto; }
+  .canvas { position: relative; width: 1070px; height: 400px; margin: 0 auto; }
   .canvas svg { position: absolute; inset: 0; }
   .edge { fill: none; stroke: var(--idle); stroke-width: 2; }
   .edge.done { stroke: var(--accent); }
@@ -132,7 +132,6 @@
   <span id="timing" class="meta"></span>
   <span class="spacer"></span>
   <label class="meta">Model <select id="model"></select></label>
-  <label class="meta">Ngưỡng Simple <input id="threshold" type="number" min="0.5" max="1" step="0.05" value="0.80" style="width:70px"></label>
   <button id="runOne" disabled>Chạy ticket này</button>
   <button id="runAll" class="primary" disabled>Chạy tất cả</button>
   <button id="stop" disabled>Dừng</button>
@@ -178,25 +177,31 @@
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-const QUESTION_NODES = ["triage", "needs_human", "urgency"];
+const SOURCE_NODES = ["source_1", "source_2", "source_3"];
+const EXTRA_NODES = ["needs_human", "urgency"];
+const QUESTION_NODES = [...SOURCE_NODES, ...EXTRA_NODES];
+const CANVAS = { w: 1070, h: 400 };
 
 // ---- pipeline layout -------------------------------------------------------
 const NODES = {
-  start: { x: 30, y: 155, terminal: true },
-  import: { x: 120, y: 155, label: "Import ticket", glyph: "IN" },
-  state: { x: 250, y: 155, label: "Ghép state", glyph: "{ }" },
-  triage: { x: 460, y: 70, label: "Triage", sub: "choice", glyph: "A/B" },
-  needs_human: { x: 460, y: 155, label: "Cần người?", sub: "noul", glyph: "Y/N" },
-  urgency: { x: 460, y: 240, label: "Khẩn cấp", sub: "score 0–3", glyph: "0–3" },
-  rule: { x: 680, y: 155, label: "Luật GBR-35", sub: "ngưỡng P(simple)", glyph: "≥", diamond: true },
-  route_simple: { x: 845, y: 95, label: "Gợi ý Solution", sub: "Simple", glyph: "✎" },
-  route_complex: { x: 845, y: 215, label: "Escalation handler", sub: "Complex", glyph: "⚑" },
-  end: { x: 1005, y: 155, terminal: true },
+  start: { x: 25, y: 200, terminal: true },
+  import: { x: 100, y: 200, label: "Import ticket", glyph: "IN" },
+  state: { x: 215, y: 200, label: "Ghép state", glyph: "{ }" },
+  retrieve: { x: 335, y: 130, label: "Tìm nguồn", sub: "bge-m3 · top 3", glyph: "⌕" },
+  source_1: { x: 500, y: 45, label: "Nguồn 1: cùng vấn đề?", sub: "chấm 2 / 1 / 0", glyph: "S1" },
+  source_2: { x: 500, y: 130, label: "Nguồn 2: cùng vấn đề?", sub: "chấm 2 / 1 / 0", glyph: "S2" },
+  source_3: { x: 500, y: 215, label: "Nguồn 3: cùng vấn đề?", sub: "chấm 2 / 1 / 0", glyph: "S3" },
+  needs_human: { x: 420, y: 315, label: "Cần người?", sub: "noul", glyph: "Y/N" },
+  urgency: { x: 580, y: 315, label: "Khẩn cấp", sub: "score 0–3", glyph: "0–3" },
+  rule: { x: 720, y: 180, label: "AI quyết định", sub: "có nguồn được chấm 2?", glyph: "?", diamond: true },
+  route_simple: { x: 880, y: 115, label: "Gợi ý Solution", sub: "Simple", glyph: "✎" },
+  route_complex: { x: 880, y: 255, label: "Escalation handler", sub: "Complex", glyph: "⚑" },
+  end: { x: 1040, y: 180, terminal: true },
 };
 const EDGES = [
-  ["start", "import"], ["import", "state"],
-  ["state", "triage"], ["state", "needs_human"], ["state", "urgency"],
-  ["triage", "rule"], ["needs_human", "rule"], ["urgency", "rule"],
+  ["start", "import"], ["import", "state"], ["state", "retrieve"],
+  ...SOURCE_NODES.flatMap((s) => [["retrieve", s], [s, "rule"]]),
+  ...EXTRA_NODES.flatMap((s) => [["state", s], [s, "rule"]]),
   ["rule", "route_simple"], ["rule", "route_complex"], ["route_simple", "end"], ["route_complex", "end"],
 ];
 
@@ -204,12 +209,12 @@ const EDGES = [
 let tickets = [];
 let execs = [];        // one execution per ticket, same index
 let selected = -1;     // selected ticket
-let selectedNode = "triage";
+let selectedNode = "retrieve";
 let questions = null;
 let running = false;
 let stopRequested = false;
 
-const newExec = () => ({ status: "idle", nodes: {}, answers: {}, traces: {}, logs: [] });
+const newExec = () => ({ status: "idle", nodes: {}, answers: {}, traces: {}, questions: {}, logs: [] });
 
 // ---- import ----------------------------------------------------------------
 // Minimal RFC 4180 CSV: quoted fields, doubled quotes, commas and newlines inside quotes.
@@ -288,19 +293,21 @@ function setNode(ex, id, patch) {
   if (execs[selected] === ex) { renderCanvas(); if (selectedNode === id) renderDetails(); }
 }
 
-async function ask(name, model, state) {
-  const res = await fetch("/v1/systemone", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-TSolve-Trace": "1" },
-    body: JSON.stringify({ model, state, questions: { [name]: questions[name] } }),
-  });
-  const body = await res.json();
-  if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
-  return { answer: body.answers[name], trace: body.trace[name], served: body.model };
+async function postJson(url, body, headers = {}) {
+  const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(body) });
+  const out = await res.json();
+  if (!res.ok) throw new Error(out.error ?? `HTTP ${res.status}`);
+  return out;
 }
+// one System One request (shared state, several questions) with the server's reasoning trace
+const askAll = (model, state, qs) => postJson("/v1/systemone", { model, state, questions: qs }, { "X-TSolve-Trace": "1" });
+
+// the team's grade for a found source, when the imported row carries graded candidates
+const gradeOf = (t, ticketId) => t.raw?.candidates?.find((c) => c.ticket_id === ticketId)?.grade ?? null;
+const gradeText = (g) => (g == null ? "chưa chấm" : `điểm ${g}`);
 
 function explain(ex, name, answer, trace) {
-  const q = questions[name];
+  const q = ex.questions[name];
   log(ex, "THINK", name, `Đọc state và câu hỏi "${q.instructions}"`);
   trace.runs.forEach((run, k) => {
     const tag = trace.runs.length > 1 ? `Lượt ${k + 1}${k ? " (đảo thứ tự)" : ""}: ` : "";
@@ -319,8 +326,7 @@ async function runTicket(i) {
   const t = tickets[i];
   const ex = (execs[i] = newExec());
   const model = $("model").value;
-  const threshold = Number($("threshold").value);
-  ex.status = "running"; ex.model = model; ex.threshold = threshold; ex.startedAt = new Date(); ex.t0 = performance.now();
+  ex.status = "running"; ex.model = model; ex.startedAt = new Date(); ex.t0 = performance.now();
   select(i);
 
   setNode(ex, "start", { status: "success" });
@@ -331,30 +337,72 @@ async function runTicket(i) {
   ex.state = state;
   setNode(ex, "state", { status: "success", ms: 0 });
   log(ex, "INFO", "state", "Ghép summary + description thành state JSON (demo chưa mask PII; hệ thống thật mask trước khi gửi)");
-  log(ex, "INFO", "model", `Gửi 3 câu hỏi song song tới ${model} qua POST /v1/systemone`);
 
-  // the three questions read the same state in parallel, like Jev
-  await Promise.all(QUESTION_NODES.map(async (name) => {
-    setNode(ex, name, { status: "running" });
-    const t0 = performance.now();
-    try {
-      const { answer, trace } = await ask(name, model, state);
-      ex.answers[name] = answer; ex.traces[name] = trace;
+  const fail = (id, e, t0) => {
+    ex.errors = { ...(ex.errors ?? {}), [id]: e.message };
+    setNode(ex, id, { status: "failed", ms: Math.round(performance.now() - t0) });
+    log(ex, "ERROR", id, e.message);
+  };
+  const record = (out, names, t0) => {
+    for (const name of names) {
+      ex.answers[name] = out.answers[name]; ex.traces[name] = out.trace[name];
       setNode(ex, name, { status: "success", ms: Math.round(performance.now() - t0) });
-      explain(ex, name, answer, trace);
-    } catch (e) {
-      ex.errors = { ...(ex.errors ?? {}), [name]: e.message };
-      setNode(ex, name, { status: "failed", ms: Math.round(performance.now() - t0) });
-      log(ex, "ERROR", name, e.message);
+      explain(ex, name, out.answers[name], out.trace[name]);
     }
-  }));
+  };
 
-  // GBR-35: Simple only when the model chose simple with enough probability; any AI error means Complex
-  const tri = ex.answers.triage;
-  if (!tri) { ex.final = "complex"; ex.reason = "AI lỗi hoặc quá thời gian → coi là Complex"; }
-  else if (tri.choice !== "simple") { ex.final = "complex"; ex.reason = `model chọn complex (P(simple) = ${tri.probabilities.simple})`; }
-  else if (tri.probabilities.simple < threshold) { ex.final = "complex"; ex.reason = `P(simple) = ${tri.probabilities.simple} < ngưỡng ${threshold} → không đủ chắc`; }
-  else { ex.final = "simple"; ex.reason = `P(simple) = ${tri.probabilities.simple} ≥ ngưỡng ${threshold}`; }
+  // branch 1: find similar resolved tickets, then ask the AI whether each one's fix applies
+  const sourceBranch = (async () => {
+    setNode(ex, "retrieve", { status: "running" });
+    let t0 = performance.now();
+    let found;
+    try {
+      found = await postJson("/local/retrieve", { ...state, exclude_same_title: true });
+    } catch (e) { SOURCE_NODES.forEach((s) => setNode(ex, s, { status: "skipped" })); return fail("retrieve", e, t0); }
+    ex.sources = found.sources;
+    setNode(ex, "retrieve", { status: "success", ms: Math.round(performance.now() - t0) });
+    log(ex, "INFO", "retrieve", found.sources.length
+      ? `${found.embed_model} tìm được ${found.sources.length} ticket giống nhất (đã bỏ ticket trùng tiêu đề với issue)`
+      : "Không có kho ticket (data/private) nên không tìm được nguồn");
+    found.sources.forEach((s, k) => log(ex, "INFO", "retrieve", `S${k + 1} ${s.id} · similarity ${s.similarity} · ${gradeText(gradeOf(t, s.id))} · ${s.title}`));
+    SOURCE_NODES.slice(found.sources.length).forEach((s) => setNode(ex, s, { status: "skipped" }));
+    if (!found.sources.length) return;
+    log(ex, "INFO", "model", `Hỏi ${model} riêng từng nguồn theo thang nhóm đã chấm: same_problem (2) / same_area (1) / unrelated (0)`);
+    // one request per source, sent together; each answers the single "match" question
+    await Promise.all(found.requests.map(async (req, k) => {
+      const node = SOURCE_NODES[k];
+      ex.questions[node] = req.questions.match;
+      ex.sourceStates = { ...(ex.sourceStates ?? {}), [node]: req.state };
+      setNode(ex, node, { status: "running" });
+      const t1 = performance.now();
+      try {
+        const out = await askAll(model, req.state, req.questions);
+        record({ answers: { [node]: out.answers.match }, trace: { [node]: out.trace.match } }, [node], t1);
+      } catch (e) { fail(node, e, t1); }
+    }));
+  })();
+
+  // branch 2: extra signals for the handler, independent of sources
+  const extraBranch = (async () => {
+    const qs = { needs_human: questions.needs_human, urgency: questions.urgency };
+    Object.assign(ex.questions, qs);
+    EXTRA_NODES.forEach((n) => setNode(ex, n, { status: "running" }));
+    const t0 = performance.now();
+    try { record(await askAll(model, state, qs), EXTRA_NODES, t0); }
+    catch (e) { EXTRA_NODES.forEach((n) => fail(n, e, t0)); }
+  })();
+
+  await Promise.all([sourceBranch, extraBranch]);
+
+  // Simple when the AI picks same_problem for at least one source; no tuned threshold.
+  // No sources, or an AI error on every source, means Complex.
+  const verdicts = (ex.sources ?? []).map((s, k) => ({ s, k, a: ex.answers[SOURCE_NODES[k]] })).filter((v) => v.a);
+  const same = verdicts.filter((v) => v.a.choice === "same_problem").sort((x, y) => y.a.probabilities.same_problem - x.a.probabilities.same_problem);
+  const AI_GRADE = { same_problem: 2, same_area: 1, unrelated: 0 };
+  const summary = verdicts.map((v) => `S${v.k + 1}=${AI_GRADE[v.a.choice]}`).join(", ");
+  if (!verdicts.length) { ex.final = "complex"; ex.reason = ex.sources?.length ? "AI không trả lời được → coi là Complex" : "không tìm được nguồn nào → Complex"; }
+  else if (same.length) { ex.final = "simple"; ex.suggestion = same[0].s; ex.reason = `AI chấm ${summary}; S${same[0].k + 1} ${same[0].s.id} là cùng vấn đề`; }
+  else { ex.final = "complex"; ex.reason = `AI chấm ${summary}; không nguồn nào cùng vấn đề`; }
   setNode(ex, "rule", { status: "success", ms: 0 });
   log(ex, "DECIDE", "rule", `${ex.reason} → ${ex.final.toUpperCase()}`);
 
@@ -362,7 +410,7 @@ async function runTicket(i) {
   setNode(ex, taken, { status: "success", ms: 0 });
   setNode(ex, taken === "route_simple" ? "route_complex" : "route_simple", { status: "skipped" });
   log(ex, "INFO", "route", ex.final === "simple"
-    ? "Hiện Solution gợi ý kèm nguồn ngay trong form Create issue"
+    ? `Gợi ý Solution của ${ex.suggestion.id} (${gradeText(gradeOf(t, ex.suggestion.id))}) ngay trong form Create issue`
     : "Gắn nhãn tsolve-needs-handler; issue chưa có assignee thì giao cho Escalation handler");
   setNode(ex, "end", { status: "success" });
 
@@ -425,8 +473,9 @@ function renderCanvas() {
   }).join("");
   const model = ex.model ?? $("model").value ?? "";
   const groups = `
-    <div class="group" style="left:365px;top:22px;width:190px;height:278px"><span>Model · ${esc(model)} · song song</span></div>
-    <div class="group" style="left:770px;top:42px;width:150px;height:236px"><span>Định tuyến</span></div>`;
+    <div class="group" style="left:425px;top:12px;width:150px;height:262px"><span>AI xác nhận nguồn · ${esc(model)}</span></div>
+    <div class="group" style="left:345px;top:283px;width:310px;height:108px"><span>Tín hiệu thêm cho handler</span></div>
+    <div class="group" style="left:805px;top:62px;width:150px;height:254px"><span>Định tuyến</span></div>`;
   const nodes = Object.entries(NODES).map(([id, n]) => {
     if (n.terminal) return `<div class="terminal ${st(id)}" style="left:${n.x}px;top:${n.y}px"></div>`;
     const s = st(id), ms = ex.nodes[id]?.ms;
@@ -436,7 +485,7 @@ function renderCanvas() {
       <div class="label">${esc(n.label)}<small>${esc(n.sub ?? "")}${ms ? ` · ${ms} ms` : ""}</small></div>
     </div>`;
   }).join("");
-  $("canvas").innerHTML = `<svg width="1040" height="310">${paths}</svg>${groups}${nodes}`;
+  $("canvas").innerHTML = `<svg width="${CANVAS.w}" height="${CANVAS.h}">${paths}</svg>${groups}${nodes}`;
   for (const el of document.querySelectorAll("[data-node]")) {
     el.onclick = () => { selectedNode = el.dataset.node; renderCanvas(); renderDetails(); };
   }
@@ -456,9 +505,18 @@ function renderDetails() {
   if (id === "import") body = `<h5>Dòng dữ liệu đã import</h5>${pre(t.raw)}`;
   else if (id === "state") body = `<h5>State gửi cho model</h5>${pre(ex.state ?? { summary: t.summary, description: t.description })}
     <p class="msg">Hệ thống thật mask PII trước bước này (GBR-44); demo bỏ qua bước mask.</p>`;
-  else if (QUESTION_NODES.includes(id)) {
-    const q = questions?.[id], a = ex.answers[id], tr = ex.traces[id];
+  else if (id === "retrieve") {
+    body = ex.sources
+      ? `<h5>Ticket giống nhất (bge-m3, cosine)</h5><table class="probs">${ex.sources.map((src, k) =>
+          `<tr><td>S${k + 1} ${esc(src.id)}</td><td>${src.similarity.toFixed(3)}</td><td><div class="pbar"><i style="width:${src.similarity * 100}%"></i></div></td><td>${esc(gradeText(gradeOf(t, src.id)))}</td></tr>
+           <tr><td colspan="4" class="msg">${esc(src.title)}</td></tr>`).join("")}</table>
+         <p class="msg">Không lọc theo similarity: AI tự quyết nguồn nào áp dụng được. Ticket có tiêu đề trùng với issue bị bỏ qua (query của nhóm được lấy từ tiêu đề ticket). "Điểm" là điểm Bình chấm cho cặp query–ticket này.</p>`
+      : '<p class="msg">Nhúng issue bằng bge-m3, so cosine với 486 ticket đã giải quyết, lấy 3 ticket gần nhất.</p>';
+  } else if (QUESTION_NODES.includes(id)) {
+    const q = ex.questions[id] ?? questions?.[id], a = ex.answers[id], tr = ex.traces[id];
+    const k = SOURCE_NODES.indexOf(id), src = k >= 0 ? ex.sources?.[k] : null;
     body = kv([["Loại", esc(q?.type ?? n.sub)], ["Câu hỏi", esc(q?.instructions ?? "")]]);
+    if (src) body += `<h5>Nguồn S${k + 1}</h5>${kv([["Ticket", esc(src.id)], ["Tiêu đề", esc(src.title)], ["Similarity", esc(src.similarity)], ["Điểm nhóm chấm", esc(gradeText(gradeOf(t, src.id)))]])}${pre(src.excerpt || "(không có đoạn trích cách sửa)")}`;
     if (tr) {
       tr.runs.forEach((run, k) => {
         const title = tr.runs.length > 1 ? ` · lượt ${k + 1}${k ? " (đảo thứ tự)" : ""}` : "";
@@ -471,9 +529,13 @@ function renderDetails() {
       body += `<h5>Output (đúng format Jev)</h5>${pre(a)}`;
     } else if (ex.errors?.[id]) body += `<h5>Lỗi</h5>${pre(ex.errors[id])}`;
   } else if (id === "rule") {
-    body = ex.final ? kv([["Ngưỡng", esc(ex.threshold)], ["P(simple)", esc(ex.answers.triage?.probabilities.simple ?? "–")], ["Lý do", esc(ex.reason)], ["Kết quả", `<span class="badge b-${ex.final}">${ex.final}</span>`]])
-      : '<p class="msg">GBR-35: Simple chỉ khi model chọn simple và P(simple) ≥ ngưỡng; mọi lỗi/timeout của AI → Complex.</p>';
-  } else if (id === "route_simple") body = '<p>Simple: T-Solve Jira App hiện Solution gợi ý (tối đa 3 nguồn) ngay trong field T-Solve Suggestion của form Create issue.</p>';
+    body = ex.final ? kv([...SOURCE_NODES.filter((s) => ex.answers[s]).map((s) => [`AI chấm ${s.replace("source_", "S")}`, esc(`${ex.answers[s].choice} (P cùng vấn đề ${ex.answers[s].probabilities.same_problem})`)]), ["Lý do", esc(ex.reason)], ["Kết quả", `<span class="badge b-${ex.final}">${ex.final}</span>`]])
+      : '<p class="msg">Simple khi AI chấm ít nhất một nguồn là same_problem (2), theo đúng thang nhóm dùng khi gán nhãn; không có ngưỡng nào khác. Không có nguồn hoặc AI lỗi → Complex.</p>';
+  } else if (id === "route_simple") {
+    body = ex.suggestion
+      ? `<p>Solution gợi ý trong form Create issue, lấy từ <b>${esc(ex.suggestion.id)}</b> (${esc(gradeText(gradeOf(t, ex.suggestion.id)))}):</p>${kv([["Tiêu đề", esc(ex.suggestion.title)]])}${pre(ex.suggestion.excerpt || "(không có đoạn trích)")}`
+      : '<p>Simple: T-Solve Jira App hiện Solution gợi ý của nguồn AI xác nhận, ngay trong form Create issue.</p>';
+  }
   else if (id === "route_complex") body = '<p>Complex: không gợi ý; gắn nhãn <code>tsolve-needs-handler</code>, issue chưa có assignee thì giao cho Escalation handler (GBR-37).</p>';
   $("details").innerHTML = `<h4>${esc(n.label)}</h4>${kv([["Trạng thái", esc(s)], ["Thời gian", ex.nodes[id]?.ms != null ? `${ex.nodes[id].ms} ms` : "–"]])}${body}`;
 }
@@ -507,12 +569,14 @@ function renderSummary() {
   const p95 = ms.length ? `${ms[Math.min(ms.length - 1, Math.ceil(0.95 * ms.length) - 1)]}` : "–";
   const cards = [["Đã chạy", `${done.length}/${tickets.length}`], ["Simple", count("simple")], ["Complex", count("complex")],
     ["Accuracy", acc], ["p95 ms", p95], ["Lỗi AI", done.filter((x) => x.ex.errors).length]];
+  // how many shown suggestions the team graded 2 (same problem, fix reusable)
+  const suggested = done.filter((x) => x.ex.suggestion);
+  const good = suggested.filter((x) => gradeOf(x.t, x.ex.suggestion.id) === 2).length;
+  if (suggested.length) cards.push(["Gợi ý điểm 2", `${good}/${suggested.length}`]);
   $("cards").innerHTML = cards.map(([k, v]) => `<div class="card"><b>${esc(v)}</b><span>${esc(k)}</span></div>`).join("");
-  // a model that always picks the first option gives one raw triage choice for every ticket
-  const raw = done.map((x) => x.ex.answers.triage?.choice).filter(Boolean);
-  const oneSided = raw.length >= 5 && new Set(raw).size === 1;
-  $("bias").hidden = !oneSided;
-  $("bias").textContent = oneSided ? `Model chọn "${raw[0]}" cho mọi ticket: dấu hiệu thiên lệch vị trí (luôn chọn đáp án đầu). Thử model lớn hơn.` : "";
+  const noKb = done.length && done.every((x) => x.ex.sources && !x.ex.sources.length);
+  $("bias").hidden = !noKb;
+  $("bias").textContent = noKb ? "Không có kho ticket (data/private/tsolve-labelled-dataset.jsonl) nên mọi issue đều ra Complex." : "";
 }
 
 (async () => {

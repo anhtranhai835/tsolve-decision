@@ -13,7 +13,7 @@ demo.ts / harness.ts ──(SDK của mình, ./sdk)──► POST /v1/systemone 
 - `tsolve-questions.ts`: các câu hỏi của T-Solve: `triage` (simple/complex), `needs_human`, `urgency`.
 - `public/index.html`: màn hình demo, server phục vụ ở `http://127.0.0.1:8787/`. Gồm:
   - **Import** ticket: 20 ticket mẫu, file JSONL/JSON/CSV, hoặc dán trực tiếp.
-  - **Pipeline**: Import → Ghép state → 3 câu hỏi chạy song song (triage / cần người / khẩn cấp) → Luật GBR-35 → Định tuyến (Gợi ý Solution hoặc Escalation handler). Bấm vào từng bước để xem input, output và prompt.
+  - **Pipeline**: Import → Ghép state → 3 câu hỏi chạy song song (triage / cần người / khẩn cấp) → AI quyết định (lấy đúng đáp án AI chọn ở câu triage, không có ngưỡng; AI lỗi thì coi là Complex) → Định tuyến (Gợi ý Solution hoặc Escalation handler). Bấm vào từng bước để xem input, output và prompt.
   - Khung **"AI đang nghĩ gì"**: model đọc prompt gì, muốn viết token nào với xác suất bao nhiêu, xác suất từng đáp án, và quyết định cuối cùng.
   - **Tổng kết**: accuracy, p95, cảnh báo khi model bị thiên lệch vị trí. Server chỉ gửi trace khi request có header `X-TSolve-Trace: 1`; client Jev bình thường không bị ảnh hưởng.
 - `harness.ts` + `data/tickets.jsonl`: chạy 20 ticket tiếng Việt đã gán nhãn, in ra accuracy, recall, Brier và latency p50/p95.
@@ -49,13 +49,45 @@ Server điền sẵn `Answer:` ở đầu câu trả lời của model. Lý do: 
 - **Trung bình 2 thứ tự** (`ORDER_DEBIAS`, bật mặc định): mỗi câu hỏi được hỏi hai lần, lần hai đảo ngược thứ tự đáp án, rồi lấy trung bình xác suất của từng đáp án. Bước này đưa 85% lên 95%, đổi lại thời gian gấp đôi. Đặt `ORDER_DEBIAS=0` để nhanh hơn.
 - Ticket còn sai: T09 (Chrome báo lỗi chứng chỉ vì đồng hồ máy sai), model cho P(simple) 0.41.
 - **Kết quả này còn lạc quan**: mô tả mới được viết khi đã biết 20 ticket này, nên 95% chưa phải con số của dữ liệu mới. Cần một tập ticket khác (held-out), tốt nhất là 200 ticket theo Report 2, để đo lại.
-- Với ngưỡng 0.80 của GBR-35 (màn hình demo áp dụng ngưỡng này, harness thì không), T05 (0.71) và T08 (0.58) vẫn bị chuyển thành Complex. Như vậy Simple thực tế được gợi ý là 7/10 ticket. Đây là hướng an toàn, và là lý do cần calibrate.
+- Màn hình demo và harness giờ dùng cùng một luật: AI chọn gì thì kết quả là đó, không có ngưỡng. Khác với SRS: GBR-35 yêu cầu nguồn có similarity ≥ 0.80 **và** AI xác nhận nguồn áp dụng được với confidence ≥ 0.70. Demo chưa có bước tìm nguồn.
 - Máy này chạy được 4b mà không cần VPS. Muốn đạt ≤ 8s ổn định cho pilot thì vẫn nên có GPU.
+
+## Triage theo nguồn (bge-m3 + AI chấm 2/1/0), đo trên dữ liệu đã chấm của nhóm, 17/10/2026
+
+Dùng `npm run harness:sources`, cần có `data/private/tsolve-labelled-dataset.jsonl` (không có trong git). Lần chạy này dừng ở 88/105 query có nhãn. Model: qwen3:4b, chạy trên CPU, mỗi query khoảng 23 giây.
+
+**Tìm nguồn** (60 query có ticket được chấm 2; ticket trùng tiêu đề với query bị loại): hit@1 70%, hit@3 80%, hit@10 92%.
+
+**AI chấm từng nguồn** so với nhóm chấm (hàng = nhóm 2/1/0, cột = AI 2/1/0):
+
+| | AI 2 | AI 1 | AI 0 |
+|---|---|---|---|
+| nhóm 2 | 86 | 8 | 0 |
+| nhóm 1 | 32 | 11 | 0 |
+| nhóm 0 | 48 | 72 | 0 |
+
+AI nhận ra 91% nguồn được chấm 2, nhưng **quá dễ dãi**: 48/120 nguồn không liên quan vẫn bị chấm 2, và AI không bao giờ chấm 0. Similarity trung bình của nguồn theo điểm nhóm: điểm 2 là 0.82, điểm 1 là 0.69, điểm 0 là 0.60.
+
+**Triage** (Simple khi có nguồn được AI chấm 2), và mô phỏng thêm cổng similarity trên cùng kết quả:
+
+| Cổng similarity | Accuracy | Simple đúng | Complex đúng | Gợi ý đưa ra (đúng điểm 2 / sai điểm 0) |
+|---|---|---|---|---|
+| không có (hiện tại) | 67% | 49/52 | 10/36 | 75 (36 / **22**) |
+| 0.65 | **80%** | 43/52 | 27/36 | 52 (35 / 5) |
+| 0.70 | 78% | 39/52 | 30/36 | 45 (34 / **2**) |
+| 0.80 (con số trong SRS) | 73% | 30/52 | 34/36 | 32 (28 / 1) |
+
+Ngưỡng được chọn trên chính dữ liệu này nên con số còn lạc quan; phải kiểm lại trên phần test riêng (xem bước 2.3 bên dưới). Câu hỏi đã thử 3 cách diễn đạt khác (gộp 3 nguồn vào một state; guideline nguyên văn có ví dụ; định nghĩa nguyên văn), cả ba đều kém hơn trên 8 query thử (xem chú thích trong `tsolve-questions.ts`).
 
 ## Bước tiếp theo
 
 1. Viết thêm khoảng 50–200 ticket mới (không dùng khi viết mô tả) để đo accuracy thật.
-2. Calibrate (temperature scaling) trên tập held-out để ngưỡng 0.80 của GBR-35 có ý nghĩa thật.
-3. Triage thật theo GBR-35: thêm các nguồn tìm được (Published ticket / Wiki) vào `state`.
+2. **Harness quanh AI để chấm nguồn chuẩn hơn** (để làm sau). Nguyên tắc: model trả lời câu hẹp, code quyết định, có cổng kiểm tra, có đo lường. Thứ tự đề xuất:
+   1. Cổng similarity trước khi hỏi AI (theo GBR-35). Ticket simple có top-1 similarity khoảng 0.81, ticket complex khoảng 0.64.
+   2. Tách câu hỏi nhỏ ("cùng hệ thống?", "cùng triệu chứng?", "cách sửa dùng lại được?"); code chỉ coi là cùng vấn đề khi cả ba đều có. Mục đích là sửa lỗi AI nhầm "cùng mảng" thành "cùng vấn đề".
+   3. Runner thử nhiều biến thể (cách hỏi, model, ngưỡng) trên dữ liệu đã chia dev/test, rồi in bảng xếp hạng.
+   4. Ví dụ thật lấy từ phần dev của dữ liệu đã chấm, đưa vào prompt.
+   5. Bỏ phiếu giữa nhiều cách hỏi, và đánh dấu "không chắc" (khi đó coi là Complex, hoặc chuyển cho model lớn hơn).
+3. Khi đã có ngưỡng thì calibrate (temperature scaling) trên tập held-out để con số ngưỡng có ý nghĩa thật.
 4. Phía Java (Spring Boot) gọi thẳng HTTP `/v1/systemone` theo contract này.
 5. Chỉ fine-tune (LoRA) khi harness cho thấy các bước trên chưa đủ.

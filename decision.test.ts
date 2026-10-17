@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { answerFor, averageOverOrders, letterDistribution, optionsOf } from "./decision.ts";
+import { topK } from "./retrieval.ts";
 import { choice, noul, score } from "./sdk/index.ts";
 
 test("letter logprobs become a distribution over the options only", () => {
@@ -48,6 +49,12 @@ test("averaging over reversed order cancels an always-A model", () => {
     { order: reversed, p: [0.9, 0.1] },
   ]);
   assert.ok(Math.abs(q[0] - 0.15) < 1e-9 && Math.abs(q[1] - 0.85) < 1e-9);
+});
+
+test("source search ranks by cosine similarity", () => {
+  const items = [{ vector: [1, 0] }, { vector: [0.6, 0.8] }, { vector: [0, 1] }];
+  assert.deepEqual(topK([0, 1], items, 2).map((x) => x.index), [2, 1]);
+  assert.equal(topK([1, 0], items, 5).length, 3);
 });
 
 test("contract violations are rejected", () => {

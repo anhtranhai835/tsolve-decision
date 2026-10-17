@@ -1,6 +1,9 @@
 # dependencies (none today, but keep them out if someone adds one)
 node_modules/
 
+# confidential real company tickets (team rule: Google Drive only, never GitHub)
+data/private/
+
 # local settings and secrets
 .env
 .env.*

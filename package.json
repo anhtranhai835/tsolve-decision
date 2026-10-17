@@ -8,6 +8,7 @@
     "server": "node server.ts",
     "demo": "node demo.ts",
     "harness": "node harness.ts",
+    "harness:sources": "node harness-sources.ts",
     "test": "node --test decision.test.ts"
   }
 }
