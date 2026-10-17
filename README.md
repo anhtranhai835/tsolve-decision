@@ -24,14 +24,18 @@ Cần Node 24+ và Ollama. Không có dependency nào, không cần `npm install
 
 ```bash
 ollama pull qwen3:4b
+ollama pull bge-m3
 npm run server      # terminal 1, rồi mở http://127.0.0.1:8787/
 npm run demo        # terminal 2 (bản dòng lệnh)
-npm run harness     # đánh giá 20 ticket
-npm run harness -- --model qwen3:0.6b --min-accuracy 0.8   # đổi model; dưới ngưỡng thì exit 1 (dùng làm gate CI)
+npm run harness     # đánh giá 20 ticket mẫu (phân loại theo nội dung)
+npm run harness:sources -- --model qwen3:4b             # triage theo nguồn trên dữ liệu nhóm; ghi vào data/private/runs/, chạy lại thì tự chạy tiếp
+npm run harness:sources -- --report --model qwen3:4b    # không gọi model: chọn luật trên dev, chấm trên test
 npm test
 ```
 
-Biến môi trường (đều có mặc định): `LOCAL_MODEL` (mặc định `qwen3:4b`), `OLLAMA_URL`, `PORT` (8787), `QUESTION_TIMEOUT_MS` (120000; SRS yêu cầu 8000 nhưng demo trên CPU cần nhiều hơn), `TSOLVE_DECISION_TIMEOUT_MS` (300000), `TSOLVE_DECISION_BASE_URL`, `TSOLVE_DECISION_API_KEY` (server local bỏ qua key này).
+Biến môi trường (đều có mặc định): `LOCAL_MODEL` (`qwen3:4b`), `SIM_GATE` (0.8, ngưỡng similarity của GBR-35, chọn bằng harness), `AI_MIN` (`argmax` = theo đáp án AI chọn; hoặc một số, ví dụ 0.2 = xác suất AI chấm 2 tối thiểu), `ORDER_DEBIAS` (1 = xoay vị trí đáp án), `OLLAMA_URL`, `EMBED_MODEL` (`bge-m3`), `KB_PATH`, `PORT` (8787), `QUESTION_TIMEOUT_MS` (120000; SRS yêu cầu 8000 nhưng demo trên CPU cần nhiều hơn), `TSOLVE_DECISION_TIMEOUT_MS` (300000), `TSOLVE_DECISION_BASE_URL`, `TSOLVE_DECISION_API_KEY` (server local bỏ qua key này).
+
+**Harness triage theo nguồn** (`harness-sources.ts`): chia cố định 105 query có nhãn thành dev (52) và test (53) theo mã query. Chế độ chạy ghi lại, cho từng nguồn, similarity, điểm nhóm chấm, xác suất AI cho 2/1/0. Chế độ `--report` thử 3 cách quyết định: chỉ dùng similarity; similarity + AI tự chọn; similarity + ngưỡng xác suất AI (GBR-35). Với mỗi cách, nó chọn luật trên dev (recall Simple cao nhất mà precision Simple ≥ 90% theo NFR của SRS), rồi chấm đúng một lần trên test. Model mới phải **vượt đường "chỉ dùng similarity"** thì mới đáng dùng.
 
 Server điền sẵn `Answer:` ở đầu câu trả lời của model. Lý do: các model có chế độ suy luận như qwen3:4b bỏ qua `think:false` và mở đầu bằng "First, the…"; khi đã điền sẵn `Answer:`, token tiếp theo bắt buộc là chữ cái đáp án.
 
@@ -78,6 +82,27 @@ AI nhận ra 91% nguồn được chấm 2, nhưng **quá dễ dãi**: 48/120 ng
 | 0.80 (con số trong SRS) | 73% | 30/52 | 34/36 | 32 (28 / 1) |
 
 Ngưỡng được chọn trên chính dữ liệu này nên con số còn lạc quan; phải kiểm lại trên phần test riêng (xem bước 2.3 bên dưới). Câu hỏi đã thử 3 cách diễn đạt khác (gộp 3 nguồn vào một state; guideline nguyên văn có ví dụ; định nghĩa nguyên văn), cả ba đều kém hơn trên 8 query thử (xem chú thích trong `tsolve-questions.ts`).
+
+## So sánh model trên dev/test cố định (harness mới, xoay vị trí đáp án), 17/10/2026
+
+105 query có nhãn; luật chọn trên dev (52), chấm trên **test (53)**:
+
+| Cách quyết định | qwen3:4b (thinking) | qwen3:4b-instruct-2507 |
+|---|---|---|
+| Chỉ dùng similarity (sim ≥ 0.80, không AI) | acc 70%, precision Simple 82%, recall 60% | (giống, vì không dùng AI) |
+| Similarity + AI tự chọn | 70% / 82% / 60% (AI không thay đổi gì) | 52% / 78% / 23% |
+| Similarity + ngưỡng xác suất AI | 70% / 82% / 60% | 65% / 80% / 53% |
+
+AI chấm so với nhóm chấm, trên toàn bộ các cặp đã chấm:
+- qwen3:4b chấm **2 cho gần như mọi cặp** (107/107 cặp nhóm chấm 2, 58/58 cặp chấm 1, 141/142 cặp chấm 0).
+- Bản instruct chấm **1 cho gần như mọi cặp**.
+- Cả hai đều không phân biệt được cặp đúng và cặp sai. Mọi quyết định thực chất đến từ similarity của bge-m3.
+- Ngưỡng similarity được chọn trên dev là **0.80, trùng GBR-35**.
+- Chưa cách nào đạt precision Simple ≥ 90% trên test (tốt nhất 82%).
+
+Lỗi đã sửa trong harness: với câu hỏi 3 đáp án, chỉ đảo ngược thứ tự thì đáp án giữa vẫn nằm ở chữ "B", mà qwen3 lại chọn "B" cho gần như mọi câu sau khi đã điền sẵn `Answer:`. Giờ server xoay vòng để mỗi đáp án lần lượt đứng ở A, B và C (`optionOrders`), rồi lấy trung bình.
+
+**Kết luận cho T-Solve:** MVP nên dùng triage chỉ bằng similarity (bge-m3 + pgvector, khoảng 1 giây trên CPU). LLM 4B chạy zero-shot không giúp gì cho bước này. Muốn đạt precision ≥ 90% thì cần **train**: model nhỏ trộn tín hiệu, rồi đến reranker fine-tune trên các cặp đã chấm. Đánh giá vẫn bằng harness này.
 
 ## Bước tiếp theo
 

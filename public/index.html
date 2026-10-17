@@ -193,7 +193,7 @@ const NODES = {
   source_3: { x: 500, y: 215, label: "Nguồn 3: cùng vấn đề?", sub: "chấm 2 / 1 / 0", glyph: "S3" },
   needs_human: { x: 420, y: 315, label: "Cần người?", sub: "noul", glyph: "Y/N" },
   urgency: { x: 580, y: 315, label: "Khẩn cấp", sub: "score 0–3", glyph: "0–3" },
-  rule: { x: 720, y: 180, label: "AI quyết định", sub: "có nguồn được chấm 2?", glyph: "?", diamond: true },
+  rule: { x: 720, y: 180, label: "AI quyết định", sub: "nguồn ≥ ngưỡng & AI chấm 2?", glyph: "?", diamond: true },
   route_simple: { x: 880, y: 115, label: "Gợi ý Solution", sub: "Simple", glyph: "✎" },
   route_complex: { x: 880, y: 255, label: "Escalation handler", sub: "Complex", glyph: "⚑" },
   end: { x: 1040, y: 180, terminal: true },
@@ -310,12 +310,12 @@ function explain(ex, name, answer, trace) {
   const q = ex.questions[name];
   log(ex, "THINK", name, `Đọc state và câu hỏi "${q.instructions}"`);
   trace.runs.forEach((run, k) => {
-    const tag = trace.runs.length > 1 ? `Lượt ${k + 1}${k ? " (đảo thứ tự)" : ""}: ` : "";
+    const tag = trace.runs.length > 1 ? `Lượt ${k + 1}${k ? " (xoay vị trí đáp án)" : ""}: ` : "";
     log(ex, "THINK", name, `${tag}đáp án ${run.order.map((key, i) => `${LETTERS[i]}) ${key}`).join("  ")}`);
     log(ex, "THINK", name, `${tag}token tiếp theo model muốn viết: ${run.top_logprobs.slice(0, 4).map((t) => `${JSON.stringify(t.token)} ${pctTok(t.logprob)}`).join(" · ")} → ${run.order.map((key, i) => `${key} ${run.distribution[i].toFixed(2)}`).join(", ")}`);
   });
   const avg = trace.options.map((o, i) => `${o.key} ${trace.distribution[i].toFixed(2)}`).join(", ");
-  log(ex, "THINK", name, trace.runs.length > 1 ? `Trung bình hai lượt để khử thiên lệch vị trí → ${avg}` : `Chuẩn hoá trên các chữ cái đáp án → ${avg}`);
+  log(ex, "THINK", name, trace.runs.length > 1 ? `Trung bình các lượt để khử thiên lệch vị trí → ${avg}` : `Chuẩn hoá trên các chữ cái đáp án → ${avg}`);
   const verdict = answer.type === "choice" ? `chọn "${answer.choice}" (confidence ${answer.confidence})`
     : answer.type === "noul" ? `P(có) = ${answer.noul}`
     : `điểm kỳ vọng ${answer.score} trên thang 0–${trace.options.length - 1}`;
@@ -367,9 +367,19 @@ async function runTicket(i) {
     found.sources.forEach((s, k) => log(ex, "INFO", "retrieve", `S${k + 1} ${s.id} · similarity ${s.similarity} · ${gradeText(gradeOf(t, s.id))} · ${s.title}`));
     SOURCE_NODES.slice(found.sources.length).forEach((s) => setNode(ex, s, { status: "skipped" }));
     if (!found.sources.length) return;
-    log(ex, "INFO", "model", `Hỏi ${model} riêng từng nguồn theo thang nhóm đã chấm: same_problem (2) / same_area (1) / unrelated (0)`);
-    // one request per source, sent together; each answers the single "match" question
-    await Promise.all(found.requests.map(async (req, k) => {
+    // GBR-35 gate: only sources similar enough go to the AI; the rest are skipped
+    ex.gate = found.gate; ex.aiMin = found.ai_min;
+    const passing = found.sources.map((s, k) => k).filter((k) => found.sources[k].similarity >= found.gate);
+    found.sources.forEach((s, k) => {
+      if (!passing.includes(k)) {
+        setNode(ex, SOURCE_NODES[k], { status: "skipped" });
+        log(ex, "INFO", "gate", `S${k + 1} bị loại: similarity ${s.similarity} < ngưỡng ${found.gate} (GBR-35)`);
+      }
+    });
+    if (!passing.length) return;
+    log(ex, "INFO", "model", `Hỏi ${model} riêng từng nguồn qua ngưỡng, theo thang nhóm đã chấm: same_problem (2) / same_area (1) / unrelated (0)`);
+    // one request per passing source, sent together; each answers the single "match" question
+    await Promise.all(passing.map((k) => [found.requests[k], k]).map(async ([req, k]) => {
       const node = SOURCE_NODES[k];
       ex.questions[node] = req.questions.match;
       ex.sourceStates = { ...(ex.sourceStates ?? {}), [node]: req.state };
@@ -394,15 +404,22 @@ async function runTicket(i) {
 
   await Promise.all([sourceBranch, extraBranch]);
 
-  // Simple when the AI picks same_problem for at least one source; no tuned threshold.
-  // No sources, or an AI error on every source, means Complex.
+  // GBR-35: Simple when a source passed the similarity gate AND the AI graded it same_problem.
+  // No source over the gate, or an AI error, means Complex.
   const verdicts = (ex.sources ?? []).map((s, k) => ({ s, k, a: ex.answers[SOURCE_NODES[k]] })).filter((v) => v.a);
-  const same = verdicts.filter((v) => v.a.choice === "same_problem").sort((x, y) => y.a.probabilities.same_problem - x.a.probabilities.same_problem);
+  // applies: P(same_problem) >= ai_min, or the AI's own pick when ai_min is "argmax"
+  const applies = (a) => (ex.aiMin === "argmax" ? a.choice === "same_problem" : a.probabilities.same_problem >= ex.aiMin);
+  const same = verdicts.filter((v) => applies(v.a)).sort((x, y) => y.s.similarity - x.s.similarity);
   const AI_GRADE = { same_problem: 2, same_area: 1, unrelated: 0 };
   const summary = verdicts.map((v) => `S${v.k + 1}=${AI_GRADE[v.a.choice]}`).join(", ");
-  if (!verdicts.length) { ex.final = "complex"; ex.reason = ex.sources?.length ? "AI không trả lời được → coi là Complex" : "không tìm được nguồn nào → Complex"; }
-  else if (same.length) { ex.final = "simple"; ex.suggestion = same[0].s; ex.reason = `AI chấm ${summary}; S${same[0].k + 1} ${same[0].s.id} là cùng vấn đề`; }
-  else { ex.final = "complex"; ex.reason = `AI chấm ${summary}; không nguồn nào cùng vấn đề`; }
+  if (!verdicts.length) {
+    ex.final = "complex";
+    ex.reason = !ex.sources?.length ? "không tìm được nguồn nào"
+      : ex.errors ? "AI không trả lời được"
+      : `không nguồn nào đạt similarity ≥ ${ex.gate}`;
+  }
+  else if (same.length) { ex.final = "simple"; ex.suggestion = same[0].s; ex.reason = `AI chấm ${summary}; S${same[0].k + 1} ${same[0].s.id} là cùng vấn đề (P = ${same[0].a.probabilities.same_problem}${ex.aiMin === "argmax" ? "" : ` ≥ ${ex.aiMin}`})`; }
+  else { ex.final = "complex"; ex.reason = `AI chấm ${summary}; không nguồn nào cùng vấn đề${ex.aiMin === "argmax" ? "" : ` với P ≥ ${ex.aiMin}`}`; }
   setNode(ex, "rule", { status: "success", ms: 0 });
   log(ex, "DECIDE", "rule", `${ex.reason} → ${ex.final.toUpperCase()}`);
 
@@ -510,7 +527,7 @@ function renderDetails() {
       ? `<h5>Ticket giống nhất (bge-m3, cosine)</h5><table class="probs">${ex.sources.map((src, k) =>
           `<tr><td>S${k + 1} ${esc(src.id)}</td><td>${src.similarity.toFixed(3)}</td><td><div class="pbar"><i style="width:${src.similarity * 100}%"></i></div></td><td>${esc(gradeText(gradeOf(t, src.id)))}</td></tr>
            <tr><td colspan="4" class="msg">${esc(src.title)}</td></tr>`).join("")}</table>
-         <p class="msg">Không lọc theo similarity: AI tự quyết nguồn nào áp dụng được. Ticket có tiêu đề trùng với issue bị bỏ qua (query của nhóm được lấy từ tiêu đề ticket). "Điểm" là điểm Bình chấm cho cặp query–ticket này.</p>`
+         <p class="msg">Nguồn dưới ngưỡng similarity (GBR-35) không được gửi cho AI. Ticket có tiêu đề trùng với issue bị bỏ qua (query của nhóm được lấy từ tiêu đề ticket). "Điểm" là điểm Bình chấm cho cặp query–ticket này.</p>`
       : '<p class="msg">Nhúng issue bằng bge-m3, so cosine với 486 ticket đã giải quyết, lấy 3 ticket gần nhất.</p>';
   } else if (QUESTION_NODES.includes(id)) {
     const q = ex.questions[id] ?? questions?.[id], a = ex.answers[id], tr = ex.traces[id];
@@ -519,18 +536,18 @@ function renderDetails() {
     if (src) body += `<h5>Nguồn S${k + 1}</h5>${kv([["Ticket", esc(src.id)], ["Tiêu đề", esc(src.title)], ["Similarity", esc(src.similarity)], ["Điểm nhóm chấm", esc(gradeText(gradeOf(t, src.id)))]])}${pre(src.excerpt || "(không có đoạn trích cách sửa)")}`;
     if (tr) {
       tr.runs.forEach((run, k) => {
-        const title = tr.runs.length > 1 ? ` · lượt ${k + 1}${k ? " (đảo thứ tự)" : ""}` : "";
+        const title = tr.runs.length > 1 ? ` · lượt ${k + 1}${k ? " (xoay vị trí đáp án)" : ""}` : "";
         body += `<h5>Prompt model nhìn thấy${title}</h5>${pre(`[system]\n${run.prompt.system}\n\n[user]\n${run.prompt.user}\n\n[assistant, điền sẵn]\n${run.prompt.assistant} ▌ ← token tiếp theo là đáp án`)}`;
         body += `<h5>Token tiếp theo (top logprobs)${title}</h5><table class="probs">${run.top_logprobs.map((x) =>
           `<tr><td class="mono">${esc(JSON.stringify(x.token))}</td><td>${pctTok(x.logprob)}</td><td><div class="pbar"><i style="width:${Math.exp(x.logprob) * 100}%"></i></div></td></tr>`).join("")}</table>`;
       });
-      body += `<h5>Xác suất từng đáp án${tr.runs.length > 1 ? " (trung bình hai lượt)" : ""}</h5><table class="probs">${tr.options.map((o, i) =>
+      body += `<h5>Xác suất từng đáp án${tr.runs.length > 1 ? " (trung bình các lượt)" : ""}</h5><table class="probs">${tr.options.map((o, i) =>
         `<tr><td>${LETTERS[i]}) ${esc(o.key)}</td><td>${tr.distribution[i].toFixed(3)}</td><td><div class="pbar"><i style="width:${tr.distribution[i] * 100}%"></i></div></td></tr>`).join("")}</table>`;
       body += `<h5>Output (đúng format Jev)</h5>${pre(a)}`;
     } else if (ex.errors?.[id]) body += `<h5>Lỗi</h5>${pre(ex.errors[id])}`;
   } else if (id === "rule") {
     body = ex.final ? kv([...SOURCE_NODES.filter((s) => ex.answers[s]).map((s) => [`AI chấm ${s.replace("source_", "S")}`, esc(`${ex.answers[s].choice} (P cùng vấn đề ${ex.answers[s].probabilities.same_problem})`)]), ["Lý do", esc(ex.reason)], ["Kết quả", `<span class="badge b-${ex.final}">${ex.final}</span>`]])
-      : '<p class="msg">Simple khi AI chấm ít nhất một nguồn là same_problem (2), theo đúng thang nhóm dùng khi gán nhãn; không có ngưỡng nào khác. Không có nguồn hoặc AI lỗi → Complex.</p>';
+      : '<p class="msg">GBR-35: Simple khi có nguồn đạt ngưỡng similarity VÀ AI xác nhận same_problem (2) với xác suất ≥ ngưỡng AI. Cả hai ngưỡng do harness chọn trên phần dev (SIM_GATE, AI_MIN). Không có nguồn hoặc AI lỗi → Complex.</p>';
   } else if (id === "route_simple") {
     body = ex.suggestion
       ? `<p>Solution gợi ý trong form Create issue, lấy từ <b>${esc(ex.suggestion.id)}</b> (${esc(gradeText(gradeOf(t, ex.suggestion.id)))}):</p>${kv([["Tiêu đề", esc(ex.suggestion.title)]])}${pre(ex.suggestion.excerpt || "(không có đoạn trích)")}`

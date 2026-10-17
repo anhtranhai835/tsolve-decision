@@ -79,8 +79,18 @@ export function letterDistribution(top: TopLogprob[], n: number): number[] {
   return w.map((x) => x / sum);
 }
 
-// Small models favour a letter position ("always A"). Asking again with the options in reverse
-// order and averaging per option cancels that bias. Each run lists the options in the order shown.
+// The orders to ask a question in so every option sits in every letter position once (cyclic
+// rotations). Reversing is not enough for 3+ options: the middle option stays at "B", and qwen3
+// models answer "B" for almost anything after the "Answer:" prefill.
+// ponytail: n calls for n options, capped to the reverse pair above 4 options; sample rotations if long choices matter
+export function optionOrders(options: Option[]): Option[][] {
+  if (options.length < 2) return [options];
+  if (options.length > 4) return [options, [...options].reverse()];
+  return options.map((_, shift) => [...options.slice(shift), ...options.slice(0, shift)]);
+}
+
+// Small models favour a letter position ("always A" or "always B"). Asking in several orders and
+// averaging per option cancels that bias. Each run lists the options in the order shown.
 export function averageOverOrders(options: Option[], runs: { order: Option[]; p: number[] }[]): number[] {
   return options.map((o) => runs.reduce((s, run) => s + run.p[run.order.indexOf(o)], 0) / runs.length);
 }

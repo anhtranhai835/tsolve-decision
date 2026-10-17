@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { answerFor, averageOverOrders, letterDistribution, optionsOf } from "./decision.ts";
+import { answerFor, averageOverOrders, letterDistribution, optionOrders, optionsOf } from "./decision.ts";
 import { topK } from "./retrieval.ts";
 import { choice, noul, score } from "./sdk/index.ts";
 
@@ -49,6 +49,17 @@ test("averaging over reversed order cancels an always-A model", () => {
     { order: reversed, p: [0.9, 0.1] },
   ]);
   assert.ok(Math.abs(q[0] - 0.15) < 1e-9 && Math.abs(q[1] - 0.85) < 1e-9);
+});
+
+test("rotations put every option in every letter position, cancelling an always-B model", () => {
+  const c = choice("?", { same_problem: "a", same_area: "b", unrelated: "c" });
+  const options = optionsOf(c);
+  const orders = optionOrders(options);
+  assert.equal(orders.length, 3);
+  for (const o of options) assert.deepEqual(orders.map((ord) => ord.indexOf(o)).sort(), [0, 1, 2]);
+  // a model that answers "B" 100% of the time, whatever the options say
+  const p = averageOverOrders(options, orders.map((order) => ({ order, p: [0, 1, 0] })));
+  assert.ok(p.every((x) => Math.abs(x - 1 / 3) < 1e-9));
 });
 
 test("source search ranks by cosine similarity", () => {

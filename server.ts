@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
 import { zstdDecompressSync } from "node:zlib";
-import { answerFor, averageOverOrders, letterDistribution, optionsOf, promptFor } from "./decision.ts";
+import { answerFor, averageOverOrders, letterDistribution, optionOrders, optionsOf, promptFor } from "./decision.ts";
 import type { Question } from "./sdk/index.ts";
 import { EMBED_MODEL, kbIndex, searchSources } from "./retrieval.ts";
 import { sourceChecks, TSOLVE_QUESTIONS } from "./tsolve-questions.ts";
@@ -19,7 +19,14 @@ const LOCAL_MODEL = process.env.LOCAL_MODEL ?? "qwen3:4b";
 const TIMEOUT_MS = Number(process.env.QUESTION_TIMEOUT_MS ?? 120_000); // SRS target is 8000 ms; CPU-only demo needs more
 const MAX_QUESTIONS = 8;
 const PREFILL = "Answer:";
-// ask each question twice (options in order, then reversed) and average; ORDER_DEBIAS=0 halves latency
+// GBR-35 similarity gate: only sources at least this similar are shown to the AI. Pick it with
+// `npm run harness:sources -- --report` (chosen on dev to reach the SRS Simple precision target).
+const SIM_GATE = Number(process.env.SIM_GATE ?? 0.8); // chosen on dev 17/10/2026 (bge-m3), matches GBR-35
+// GBR-35 AI confidence: a source applies when P(same_problem) >= AI_MIN; "argmax" uses the AI's own pick
+// default "argmax": with qwen3:4b the confidence variant scored the same on test (harness 17/10/2026)
+const AI_MIN: number | "argmax" = process.env.AI_MIN && process.env.AI_MIN !== "argmax" ? Number(process.env.AI_MIN) : "argmax";
+// ask each question with the options rotated through every letter position and average;
+// ORDER_DEBIAS=0 asks once (faster, but exposed to letter-position bias)
 const ORDER_DEBIAS = process.env.ORDER_DEBIAS !== "0";
 
 // The SDK default ("tsolve-decision") and Jev names map to LOCAL_MODEL; anything else is an Ollama model.
@@ -125,7 +132,7 @@ createServer(async (req, res) => {
       const issue = JSON.parse(await readBody(req));
       const t0 = performance.now();
       const sources = await searchSources(`${issue.summary ?? ""}\n${issue.description ?? ""}`, Number(issue.k) || 3, issue.exclude_same_title ? issue.summary : undefined);
-      return send(200, { embed_model: EMBED_MODEL, ms: Math.round(performance.now() - t0), sources, requests: sourceChecks(issue, sources) });
+      return send(200, { embed_model: EMBED_MODEL, gate: SIM_GATE, ai_min: AI_MIN, ms: Math.round(performance.now() - t0), sources, requests: sourceChecks(issue, sources) });
     } catch (e) {
       return send(502, { error: (e as Error).message });
     }
@@ -153,7 +160,7 @@ createServer(async (req, res) => {
       Object.entries(questions).map(async ([name, q]) => {
         const t0 = performance.now();
         const options = optionsOf(q);
-        const orders = ORDER_DEBIAS && options.length > 1 ? [options, [...options].reverse()] : [options];
+        const orders = ORDER_DEBIAS ? optionOrders(options) : [options];
         const runs = await Promise.all(
           orders.map(async (order) => {
             const prompt = promptFor(body.state, q, order);
